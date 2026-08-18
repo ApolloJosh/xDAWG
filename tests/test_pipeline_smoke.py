@@ -68,7 +68,8 @@ def _synthetic_statcast() -> pd.DataFrame:
         ),
         "description": RNG.choice(
             ["ball", "called_strike", "swinging_strike", "foul",
-             "hit_into_play", "foul_tip"], n,
+             "hit_into_play", "foul_tip", "hit_by_pitch"], n,
+            p=[0.32, 0.16, 0.14, 0.19, 0.17, 0.01, 0.01],
         ),
         "type": RNG.choice(["B", "S", "X"], n),
         "zone": RNG.choice([1, 5, 9, 11, 13, 14, np.nan], n),
@@ -102,6 +103,8 @@ def _synthetic_statcast() -> pd.DataFrame:
         "away_team": np.where(away == home, "NYY", away),
     })
 
+    df = _add_runner_continuity(df)
+
     # Fielder attribution, mostly null (only balls actually fielded).
     df["hit_location"] = np.where(
         RNG.random(n) < 0.78, np.nan, RNG.integers(2, 10, n)
@@ -126,6 +129,51 @@ def _synthetic_statcast() -> pd.DataFrame:
     df["release_speed"] = df["release_speed"].astype("Float64")
     df["release_spin_rate"] = df["release_spin_rate"].astype("Float64")
     df["hit_location"] = df["hit_location"].astype("Float64")
+    return df
+
+
+def _add_runner_continuity(df: pd.DataFrame) -> pd.DataFrame:
+    """Make base runners persist across plate appearances within a game.
+
+    `xbt_frame` reads baserunning out of how `on_1b`/`on_2b`/`on_3b` change
+    between consecutive plate appearances, so runner ids drawn independently
+    per row carry no signal at all and the component silently computes
+    nothing. Walking a real base state through each game is what makes that
+    code path testable.
+    """
+    df = df.sort_values(["game_pk", "at_bat_number"]).reset_index(drop=True)
+    on1 = np.full(len(df), np.nan)
+    on2 = np.full(len(df), np.nan)
+    on3 = np.full(len(df), np.nan)
+
+    bases = {}          # base -> runner id, for the game in progress
+    current_game = None
+    last_ab = None
+    for i, (g, ab, bat, ev) in enumerate(zip(
+            df["game_pk"], df["at_bat_number"], df["batter"],
+            df["events"].astype(str))):
+        if g != current_game:
+            bases, current_game, last_ab = {}, g, None
+        if ab != last_ab:
+            # A new plate appearance: advance whoever was on base.
+            if last_ab is not None:
+                nxt = {}
+                for base, rid in bases.items():
+                    if RNG.random() < 0.55:          # advanced a base or more
+                        moved = base + RNG.integers(1, 3)
+                        if moved <= 3:
+                            nxt[int(moved)] = rid
+                    else:
+                        nxt[base] = rid              # held
+                bases = {b: r for b, r in nxt.items() if b in (1, 2, 3)}
+            last_ab = ab
+            if ev in ("single", "walk") and 1 not in bases:
+                bases[1] = int(bat)                  # batter reaches first
+        on1[i] = bases.get(1, np.nan)
+        on2[i] = bases.get(2, np.nan)
+        on3[i] = bases.get(3, np.nan)
+
+    df["on_1b"], df["on_2b"], df["on_3b"] = on1, on2, on3
     return df
 
 
@@ -221,3 +269,18 @@ def test_payload_builds_and_pillars_are_alive(offline):
                 f"{role} {pillar} has zero spread -- every component "
                 "dropped out, which verify_build would hard-fail"
             )
+
+    # GRIT and FIGHT each ran on a single component until these were built,
+    # which put 60% of a hitter's score on two numbers. Assert they are still
+    # wired up, because they fail by silently computing nothing rather than
+    # by raising.
+    hitters_rows = [p for p in payload["players"] if p["role"] == "hitter"]
+    present = {
+        c["key"]
+        for p in hitters_rows
+        for pil in p["pillars"].values()
+        for c in pil["components"]
+    }
+    for key in ("availability", "hbp_above_expected", "extra_bases_taken",
+                "fight_process_delta"):
+        assert key in present, f"{key} computed nothing"
