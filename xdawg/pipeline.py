@@ -85,10 +85,23 @@ def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
     return out.rename(columns={"delta": "fight_rv_delta", "n": "fight_rv_delta__n"})
 
 
-def run(season: int = SEASON_DEFAULT, refresh: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run(
+    season: int = SEASON_DEFAULT,
+    refresh: bool = False,
+    start: str | None = None,
+    end: str | None = None,
+    min_pa: int | None = None,
+    min_bf: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Score a season. Pass start/end plus low min_pa/min_bf to smoke test."""
+    min_pa = QUALIFY["hitter_min_pa"] if min_pa is None else min_pa
+    min_bf = QUALIFY["pitcher_min_bf"] if min_bf is None else min_bf
+
     print(f"[xdawg] loading statcast {season} (first run is slow, then cached)")
-    p = ingest.load_statcast(season, refresh=refresh)
+    p = ingest.load_statcast(season, refresh=refresh, start=start, end=end)
     print(f"[xdawg] {len(p):,} pitches")
+    if p.empty:
+        raise SystemExit("[xdawg] no pitches returned - check the season/date range")
 
     print("[xdawg] computing empirical leverage index")
     p = add_leverage(p)
@@ -106,10 +119,15 @@ def run(season: int = SEASON_DEFAULT, refresh: bool = False) -> tuple[pd.DataFra
     ]
     hit = _merge_all(h_frames, "batter").rename(columns={"batter": "player_id"})
 
-    pa_counts = p.groupby("batter")["at_bat_number"].nunique().rename("opportunities")
+    # at_bat_number restarts at 1 every game, so nunique() would cap every
+    # player around 80. Count distinct (game, at-bat) pairs instead.
+    pa_counts = (
+        p.drop_duplicates(["batter", "game_pk", "at_bat_number"])
+        .groupby("batter").size().rename("opportunities")
+    )
     hit = hit.merge(pa_counts.reset_index().rename(columns={"batter": "player_id"}),
                     on="player_id", how="left")
-    hit = hit[hit["opportunities"].fillna(0) >= QUALIFY["hitter_min_pa"]]
+    hit = hit[hit["opportunities"].fillna(0) >= min_pa]
     hit["team"] = hit["player_id"].map(_team_of(p, "batter"))
     hit["name"] = hit["player_id"].map(lambda i: names.get(int(i), str(i)))
     hit["pos"] = ""
@@ -126,10 +144,13 @@ def run(season: int = SEASON_DEFAULT, refresh: bool = False) -> tuple[pd.DataFra
     ]
     pit = _merge_all(p_frames, "pitcher").rename(columns={"pitcher": "player_id"})
 
-    bf = p.groupby("pitcher")["at_bat_number"].nunique().rename("opportunities")
+    bf = (
+        p.drop_duplicates(["pitcher", "game_pk", "at_bat_number"])
+        .groupby("pitcher").size().rename("opportunities")
+    )
     pit = pit.merge(bf.reset_index().rename(columns={"pitcher": "player_id"}),
                     on="player_id", how="left")
-    pit = pit[pit["opportunities"].fillna(0) >= QUALIFY["pitcher_min_bf"]]
+    pit = pit[pit["opportunities"].fillna(0) >= min_bf]
     pit["team"] = pit["player_id"].map(_team_of(p, "pitcher"))
     pit["name"] = pit["player_id"].map(lambda i: names.get(int(i), str(i)))
     pit["pos"] = ""

@@ -36,6 +36,39 @@ def _cache_path(name: str) -> Path:
     return CACHE / f"{name}.parquet"
 
 
+def pick_col(df: pd.DataFrame, *candidates: str) -> str | None:
+    """Find the first candidate column actually present, loosely matched.
+
+    Savant's leaderboard CSVs rename columns without warning, and the names
+    drift in predictable, cosmetic ways -- `catch_probability` becomes
+    `catch_prob`, spaces become underscores, casing flips. Matching loosely
+    on a list of candidates means a rename costs us a warning rather than a
+    KeyError forty minutes into a build.
+
+    Returns the real column name, or None if nothing matched.
+    """
+    def norm(s: str) -> str:
+        return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+    lookup = {norm(c): c for c in df.columns}
+    for cand in candidates:
+        hit = lookup.get(norm(cand))
+        if hit is not None:
+            return hit
+    # Fall back to containment in EITHER direction, so `catch_probability`
+    # finds both `five_star_catch_probability` (longer) and `catch_prob`
+    # (shorter). Require 4+ characters so short names like `n` or `rs` can't
+    # match half the frame by accident.
+    for cand in candidates:
+        n = norm(cand)
+        if len(n) < 4:
+            continue
+        for key, real in lookup.items():
+            if len(key) >= 4 and (n in key or key in n):
+                return real
+    return None
+
+
 def season_dates(season: int) -> tuple[str, str]:
     """Regular season window, clipped to today for an in-progress season."""
     start, end = f"{season}-03-15", f"{season}-10-05"
@@ -43,19 +76,32 @@ def season_dates(season: int) -> tuple[str, str]:
     return start, min(end, today)
 
 
-def load_statcast(season: int, refresh: bool = False) -> pd.DataFrame:
-    """Pull a full season of pitch-level Statcast, cached to Parquet.
+def load_statcast(
+    season: int,
+    refresh: bool = False,
+    start: str | None = None,
+    end: str | None = None,
+) -> pd.DataFrame:
+    """Pull pitch-level Statcast, cached to Parquet.
 
-    The first run for a season is slow -- pybaseball chunks the request by
+    The first full-season run is slow -- pybaseball chunks the request by
     date and Savant rate-limits. Subsequent runs read from cache instantly.
+
+    Pass `start`/`end` to pull a narrow window instead; that variant caches
+    under its own key so a smoke test never clobbers the full-season pull.
     """
-    path = _cache_path(f"statcast_{season}")
+    default_start, default_end = season_dates(season)
+    start = start or default_start
+    end = end or default_end
+
+    tag = (f"statcast_{season}" if (start, end) == (default_start, default_end)
+           else f"statcast_{season}_{start}_{end}")
+    path = _cache_path(tag)
     if path.exists() and not refresh:
         return pd.read_parquet(path)
 
     from pybaseball import statcast  # imported lazily: heavy, and optional
 
-    start, end = season_dates(season)
     df = statcast(start_dt=start, end_dt=end, verbose=True)
 
     keep = [c for c in STATCAST_COLS if c in df.columns]
@@ -85,10 +131,10 @@ def load_sprint_speed(season: int) -> pd.DataFrame | None:
         return None
 
 
-def load_catch_probability(season: int) -> pd.DataFrame | None:
+def load_catch_probability(season: int, refresh: bool = False) -> pd.DataFrame | None:
     """Outfield catch probability, for HUNT star catches."""
     path = _cache_path(f"catch_{season}")
-    if path.exists():
+    if path.exists() and not refresh:
         return pd.read_parquet(path)
     try:
         import io
@@ -101,11 +147,66 @@ def load_catch_probability(season: int) -> pd.DataFrame | None:
         r = requests.get(url, timeout=60)
         r.raise_for_status()
         df = pd.read_csv(io.StringIO(r.text))
+        # Print rather than warn: this is the one leaderboard whose schema has
+        # actually bitten us, and the column list is what you need to see when
+        # it does. A warning would be filtered out of a long build log.
+        print(f"[xdawg] catch_probability columns: {list(df.columns)}")
         df.to_parquet(path, index=False)
         return df
     except Exception as e:  # noqa: BLE001
         warnings.warn(f"catch probability unavailable ({e}); HUNT star term dropped")
         return None
+
+
+OPTIONAL_LEADERBOARDS = ("sprint_speed", "catch_probability", "standings")
+
+
+def probe(season: int) -> int:
+    """Fetch each optional leaderboard and report its real column names.
+
+    Every one of these degrades gracefully at runtime, which is right for a
+    build but means a rename shows up as a quietly missing pillar term. This
+    asks each source what it actually returns, so a mapping can be written
+    against the truth instead of against last season's column names.
+
+    Returns the number of sources that could not be reached at all.
+    """
+    loaders = {
+        "sprint_speed": lambda: load_sprint_speed(season),
+        "catch_probability": lambda: load_catch_probability(season, refresh=True),
+        "standings": lambda: load_standings(season),
+    }
+    # What each pillar term needs from that source.
+    needed = {
+        "sprint_speed": ("batter", "sprint_speed", "hp_to_1b"),
+        "catch_probability": ("player_id", "catch_probability", "caught", "attempted"),
+        "standings": ("team", "rs", "ra"),
+    }
+
+    dead = 0
+    for name, load in loaders.items():
+        print(f"\n=== {name} ===")
+        try:
+            df = load()
+        except Exception as e:  # noqa: BLE001
+            print(f"  ERROR {e}")
+            dead += 1
+            continue
+        if df is None or df.empty:
+            print("  unreachable or empty -- its pillar term will drop out")
+            dead += 1
+            continue
+
+        print(f"  {len(df)} rows, {len(df.columns)} columns")
+        print(f"  columns: {list(df.columns)}")
+        print("  what the pillars look for:")
+        for want in needed[name]:
+            got = pick_col(df, want)
+            mark = f"-> {got}" if got else "-> MISSING"
+            print(f"    {want:<20} {mark}")
+        with pd.option_context("display.max_columns", None, "display.width", 200):
+            print(f"  first row:\n{df.head(1).to_string()}")
+    return dead
 
 
 def load_standings(season: int) -> pd.DataFrame | None:

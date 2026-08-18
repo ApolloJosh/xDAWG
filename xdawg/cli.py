@@ -20,6 +20,19 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--refresh", action="store_true", help="ignore the local cache")
     b.add_argument("--site", default=str(SITE))
 
+    s = sub.add_parser(
+        "smoke",
+        help="short-window trial run to validate ingestion without a full pull",
+    )
+    s.add_argument("--season", type=int, default=SEASON_DEFAULT)
+    s.add_argument("--days", type=int, default=10)
+
+    pr = sub.add_parser(
+        "probe",
+        help="report the real column names of every optional leaderboard",
+    )
+    pr.add_argument("--season", type=int, default=SEASON_DEFAULT)
+
     m = sub.add_parser("mock", help="regenerate placeholder data for the site")
     m.add_argument("--site", default=str(SITE))
 
@@ -48,6 +61,40 @@ def main(argv: list[str] | None = None) -> int:
                 httpd.serve_forever()
             except KeyboardInterrupt:
                 pass
+        return 0
+
+    if a.cmd == "probe":
+        from .ingest import probe
+
+        print(f"[xdawg] probing optional leaderboards for {a.season}")
+        print("[xdawg] these all degrade silently at runtime, so a rename")
+        print("[xdawg] shows up as a missing pillar term rather than an error\n")
+        dead = probe(a.season)
+        print(f"\n[xdawg] {dead} source(s) unreachable")
+        return 0
+
+    if a.cmd == "smoke":
+        import datetime as dt
+
+        from .ingest import season_dates
+        from .pipeline import run
+
+        _, last = season_dates(a.season)
+        end = dt.date.fromisoformat(last)
+        start = end - dt.timedelta(days=a.days)
+        print(f"[xdawg] smoke test: {start} to {end}")
+        print("[xdawg] thresholds relaxed - a short window can't reach the real ones\n")
+
+        # Deliberately does NOT write site data. This only answers "does the
+        # ingestion path work end to end," so it can never clobber a good build.
+        hit, pit = run(
+            season=a.season, start=str(start), end=str(end), min_pa=15, min_bf=15
+        )
+        for label, df in (("HITTERS", hit), ("PITCHERS", pit)):
+            print(f"\n  {label} - {len(df)} scored")
+            for _, r in df.head(5).iterrows():
+                print(f"    {r['name']:<24} {str(r['team']):<4} {r['xDAWG']:6.1f}")
+        print("\n[xdawg] ingestion path works. Now run: python -m xdawg build")
         return 0
 
     from .export import build_payload, write_site_data
