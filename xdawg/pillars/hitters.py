@@ -147,7 +147,12 @@ def grit(
     for f, col in ((hbp, "hbp_above_expected"), (xbt, "extra_bases_taken"),
                    (availability, "availability")):
         if f is not None and not f.empty and col in f.columns:
-            frames.append(f[["batter", col]])
+            # Carry the opportunity count when the source supplies one.
+            # Without it, score_pillar falls back to n == k and shrinks every
+            # player by a flat one half, which erases the distinction between
+            # a full season of evidence and a dozen games of it.
+            cols = ["batter", col] + ([f"{col}__n"] if f"{col}__n" in f.columns else [])
+            frames.append(f[cols])
 
     if not frames:
         return pd.DataFrame(columns=["batter"])
@@ -325,3 +330,170 @@ def hunt(
         "batter", "oaa_rate", "oaa_rate__n",
         "oaa_situational", "oaa_situational__n",
     ]]
+
+
+# ---------------------------------------------------------------------------
+# GRIT inputs derived from the pitch feed.
+#
+# GRIT is the one pillar measured on absolute level rather than as a
+# leverage delta -- running it out and staying on the field are not things
+# you do more of when the game is close, you either do them or you don't.
+# ---------------------------------------------------------------------------
+
+
+def availability_frame(p: pd.DataFrame) -> pd.DataFrame:
+    """Share of his team's games the player actually appeared in.
+
+    The cheapest honest grit signal there is: the ability to stay on the
+    field. Measured against his own club's game count rather than a fixed
+    162 so that a player traded mid-season, or one whose team has played
+    fewer games, is not penalised for the schedule.
+    """
+    if not {"batter", "game_pk"}.issubset(p.columns):
+        return pd.DataFrame(columns=["batter", "availability", "availability__n"])
+
+    batting_home = p["inning_topbot"].astype(str).str.startswith("Bot")
+    team = np.where(batting_home, p["home_team"], p["away_team"])
+    d = pd.DataFrame({
+        "batter": p["batter"], "game_pk": p["game_pk"], "team": team,
+    }).dropna(subset=["batter", "game_pk"])
+
+    played = d.groupby("batter")["game_pk"].nunique().rename("_g")
+    # Each player's own club, by where he appears most.
+    club = d.groupby("batter")["team"].agg(lambda s: s.value_counts().idxmax())
+    team_games = d.groupby("team")["game_pk"].nunique()
+
+    out = played.to_frame().join(club.rename("team"))
+    out["_team_g"] = out["team"].map(team_games)
+    out["availability"] = (out["_g"] / out["_team_g"]).clip(upper=1.0)
+    out["availability__n"] = out["_team_g"]
+    return out.reset_index()[["batter", "availability", "availability__n"]]
+
+
+def hbp_frame(p: pd.DataFrame) -> pd.DataFrame:
+    """Hit-by-pitches above what his pitch locations would predict.
+
+    Wearing one is the purest grit stat in the sport, but a raw HBP count
+    mostly measures how often pitchers miss inside to you. So we build an
+    empirical expectation: for every pitch he saw, how often does a pitch at
+    that location, to a batter of that handedness, actually hit someone?
+    The sum of those probabilities is his expected HBP, and the excess is
+    the part attributable to not getting out of the way.
+    """
+    need = {"batter", "plate_x", "plate_z", "stand"}
+    if not need.issubset(p.columns):
+        return pd.DataFrame(columns=["batter", "hbp_above_expected",
+                                     "hbp_above_expected__n"])
+
+    d = pd.DataFrame({
+        "batter": p["batter"],
+        "px": pd.to_numeric(p["plate_x"], errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan),
+        "pz": pd.to_numeric(p["plate_z"], errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan),
+        "stand": p["stand"].astype(str).to_numpy(),
+    })
+    desc = p.get("description", pd.Series("", index=p.index)).astype(str)
+    events = p.get("events", pd.Series("", index=p.index)).astype(str)
+    d["hbp"] = (desc.str.contains("hit_by_pitch", na=False)
+                | events.str.contains("hit_by_pitch", na=False)).to_numpy(float)
+    d = d.dropna(subset=["px", "pz"])
+    if d.empty or d["hbp"].sum() == 0:
+        return pd.DataFrame(columns=["batter", "hbp_above_expected",
+                                     "hbp_above_expected__n"])
+
+    # Quarter-foot bins. Coarse on purpose: HBP is rare, and fine bins would
+    # hand most batters an expectation built from a handful of pitches.
+    d["bx"] = np.round(d["px"] * 4).astype(int)
+    d["bz"] = np.round(d["pz"] * 4).astype(int)
+    league = d.groupby(["stand", "bx", "bz"])["hbp"].mean().rename("p_hbp")
+    d = d.join(league, on=["stand", "bx", "bz"])
+    d["p_hbp"] = d["p_hbp"].fillna(d["hbp"].mean())
+
+    g = d.groupby("batter").agg(
+        actual=("hbp", "sum"), expected=("p_hbp", "sum"), n=("hbp", "size")
+    ).reset_index()
+    # Per 100 pitches seen, so it is a rate and not a playing-time proxy.
+    g["hbp_above_expected"] = 100.0 * (g["actual"] - g["expected"]) / g["n"].clip(lower=1)
+    return g.rename(columns={"n": "hbp_above_expected__n"})[
+        ["batter", "hbp_above_expected", "hbp_above_expected__n"]
+    ]
+
+
+# Bases a runner is expected to take, learned from the league rather than
+# assumed, keyed on (starting base, what the batter did).
+_XBT_EVENTS = ("single", "double")
+
+
+def xbt_frame(p: pd.DataFrame) -> pd.DataFrame:
+    """Extra bases taken on hits, against the league's own baseline.
+
+    Statcast's `on_1b`/`on_2b`/`on_3b` carry runner IDs, so consecutive
+    plate appearances in a game reveal where every runner ended up without
+    needing play-by-play from another source -- which would otherwise mean
+    thousands of extra API calls and a much longer build.
+
+    Restricted to singles and doubles: those are the classic first-to-third
+    and scoring-from-first situations, and on a hit a vanished runner has
+    almost always scored rather than been retired, which is what makes the
+    inference safe. A runner lifted for a pinch runner mid-inning is
+    misread, but that is rare and unbiased across players.
+    """
+    need = {"game_pk", "at_bat_number", "on_1b", "on_2b", "on_3b", "events"}
+    if not need.issubset(p.columns):
+        return pd.DataFrame(columns=["batter", "extra_bases_taken",
+                                     "extra_bases_taken__n"])
+
+    pa = (
+        p.groupby(["game_pk", "at_bat_number"], sort=True)
+        .agg(on_1b=("on_1b", "first"), on_2b=("on_2b", "first"),
+             on_3b=("on_3b", "first"), events=("events", "last"))
+        .reset_index()
+        .sort_values(["game_pk", "at_bat_number"])
+    )
+    if pa.empty:
+        return pd.DataFrame(columns=["batter", "extra_bases_taken",
+                                     "extra_bases_taken__n"])
+
+    # Where every runner stands at the start of the NEXT plate appearance.
+    nxt = {}
+    for base in (1, 2, 3):
+        nxt[base] = pa.groupby("game_pk")[f"on_{base}b"].shift(-1)
+
+    ev = pa["events"].astype(str).str.lower()
+    keep = ev.isin(_XBT_EVENTS)
+
+    rows = []
+    for base in (1, 2):  # a runner on third has no extra base to take
+        rid = pd.to_numeric(pa[f"on_{base}b"], errors="coerce")
+        sel = keep & rid.notna()
+        if not sel.any():
+            continue
+        after = pd.DataFrame({b: pd.to_numeric(nxt[b], errors="coerce")
+                              for b in (1, 2, 3)})
+        # Which base is he standing on next time we look? None => scored.
+        ended = np.full(len(pa), 4.0)
+        for b in (1, 2, 3):
+            ended = np.where((after[b] == rid).to_numpy(), float(b), ended)
+        rows.append(pd.DataFrame({
+            "batter": rid[sel].astype("int64"),
+            "start": base,
+            "event": ev[sel],
+            "advance": np.clip(ended[sel.to_numpy()] - base, 0, 3),
+        }))
+
+    if not rows:
+        return pd.DataFrame(columns=["batter", "extra_bases_taken",
+                                     "extra_bases_taken__n"])
+    d = pd.concat(rows, ignore_index=True)
+
+    # Expectation learned from the league for the same situation, so this
+    # measures aggression and reads, not how often he happened to be on base
+    # when someone doubled.
+    exp = d.groupby(["start", "event"])["advance"].transform("mean")
+    d["excess"] = d["advance"] - exp
+
+    g = d.groupby("batter").agg(
+        extra_bases_taken=("excess", "mean"), n=("excess", "size")
+    ).reset_index()
+    return g.rename(columns={"n": "extra_bases_taken__n"})
