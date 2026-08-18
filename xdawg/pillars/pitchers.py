@@ -86,19 +86,27 @@ def post_hr_bounceback(p: pd.DataFrame) -> pd.DataFrame:
     """Performance against the very next batter after allowing a home run."""
     pa = (
         p.groupby(["pitcher", "game_pk", "at_bat_number"])
-        .agg(events=("events", "last"), rv=("delta_run_exp", "sum"))
+        .agg(events=("events", "last"), rv=("delta_run_exp", "sum"),
+             li=("li", "first"))
         .reset_index()
         .sort_values(["pitcher", "game_pk", "at_bat_number"])
     )
     pa["prev_hr"] = (
         pa.groupby(["pitcher", "game_pk"])["events"].shift(1).astype(str).eq("home_run")
     )
-    after = pa[pa["prev_hr"]]
+    after = pa[pa["prev_hr"]].copy()
     if after.empty:
         return pd.DataFrame(columns=["pitcher", "post_hr_bounceback", "post_hr_bounceback__n"])
 
+    # Leverage-weighted, same reasoning as the hitters' post-strikeout term:
+    # giving up a homer and then holding the line in a one-run game is the
+    # trait being measured; doing it up nine in the 8th is not the same thing.
+    after["_wv"] = after["rv"] * after["li"]
     base = pa.groupby("pitcher")["rv"].mean()
-    g = after.groupby("pitcher").agg(rv=("rv", "mean"), n=("rv", "size")).reset_index()
+    g = after.groupby("pitcher").agg(
+        _sum_wv=("_wv", "sum"), _sum_w=("li", "sum"), n=("rv", "size")
+    ).reset_index()
+    g["rv"] = (g["_sum_wv"] / g["_sum_w"].where(g["_sum_w"] > 0)).fillna(0.0)
     # Run value is from the batting team's view, so lower is better for the
     # pitcher -- negate so higher is always more dawg.
     g["post_hr_bounceback"] = -(g["rv"] - g["pitcher"].map(base))
