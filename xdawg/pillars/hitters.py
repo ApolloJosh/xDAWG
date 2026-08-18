@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
+from .. import ingest
 from ..leverage import weighted_delta
 
 WHIFFS = {"swinging_strike", "swinging_strike_blocked", "missed_bunt"}
@@ -152,19 +155,53 @@ def hunt(catches: pd.DataFrame | None, p: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["batter"])
 
     c = catches.copy()
+
+    # Savant renames these without notice, so resolve them rather than
+    # indexing directly. A missing essential drops the whole term and lets
+    # the pillar weights renormalize -- the same graceful degradation the
+    # other optional leaderboards already get. Indexing directly instead
+    # killed a forty-minute build at the very last step.
+    id_col = ingest.pick_col(c, "player_id", "entity_id", "playerid", "mlbam_id")
+    prob_col = ingest.pick_col(c, "catch_probability", "catch_prob", "catchprob")
+    if id_col is None or prob_col is None:
+        missing = [
+            n for n, v in (("player id", id_col), ("catch probability", prob_col))
+            if v is None
+        ]
+        warnings.warn(
+            f"catch probability schema drift: no {' or '.join(missing)} in "
+            f"{list(c.columns)}; HUNT star term dropped"
+        )
+        return pd.DataFrame(columns=["batter"])
+
+    prob = pd.to_numeric(c[prob_col], errors="coerce")
+    # Savant has served this as a 0-1 fraction and as a 0-100 percentage.
+    top = prob.max(skipna=True)
+    if pd.notna(top) and float(top) > 1.5:
+        prob = prob / 100.0
+
     c["star"] = pd.cut(
-        pd.to_numeric(c["catch_probability"], errors="coerce"),
+        prob,
         bins=[-0.01, 0.25, 0.50, 0.75, 0.90, 1.01],
         labels=[5, 4, 3, 2, 1],
     ).astype(float)
 
     lev = c["li"] if "li" in c.columns else 1.0
-    made = c.get("caught", pd.Series(0, index=c.index)).astype(float)
+
+    made_col = ingest.pick_col(c, "caught", "n_caught", "catches", "plays_made")
+    made = (
+        pd.to_numeric(c[made_col], errors="coerce").fillna(0.0)
+        if made_col is not None else pd.Series(0.0, index=c.index)
+    )
+    att_col = ingest.pick_col(c, "attempted", "n_attempted", "opportunities", "n_opp")
+    attempted = (
+        pd.to_numeric(c[att_col], errors="coerce").fillna(1.0)
+        if att_col is not None else pd.Series(1.0, index=c.index)
+    )
 
     c["_value"] = made * c["star"] * lev
-    c["_attempt"] = (c["star"] >= 4).astype(float) * c.get(
-        "attempted", pd.Series(1, index=c.index)
-    ).astype(float)
+    c["_attempt"] = (c["star"] >= 4).astype(float) * attempted
+    c["player_id"] = c[id_col]
 
     g = c.groupby("player_id").agg(
         star_catch_lev=("_value", "sum"),
