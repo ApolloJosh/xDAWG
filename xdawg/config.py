@@ -14,8 +14,17 @@ SEASON_DEFAULT = 2026
 # a stated preference about what matters. Change them and rerun.
 # ---------------------------------------------------------------------------
 
+# Hitter HUNT is cut to 0.10 because it rests on OAA -- a season total, only
+# coarsely situational, and the one component not self-referenced against the
+# player's own baseline. The other three pillars are all built from
+# leverage-weighted deltas, so they carry the metric.
+#
+# Pitcher weights are unchanged: pitcher HUNT is a different construction
+# entirely (risp_stuff_delta / putaway_lev / jam_escape_process), all three
+# leverage-weighted per pitch, so none of the reasons for cutting the hitter
+# side apply to it.
 PILLAR_WEIGHTS = {
-    "hitter": {"bite": 0.30, "grit": 0.25, "hunt": 0.20, "fight": 0.25},
+    "hitter": {"bite": 0.30, "grit": 0.30, "hunt": 0.10, "fight": 0.30},
     "pitcher": {"bite": 0.30, "grit": 0.25, "hunt": 0.25, "fight": 0.20},
 }
 
@@ -48,11 +57,26 @@ COMPONENTS = {
             "extra_bases_taken":  {"weight": 0.22, "invert": False, "k": 50},
             "availability":       {"weight": 0.18, "invert": False, "k": 30},
         },
+        # HUNT is built on OAA, which Savant publishes only as a season total
+        # per fielder -- there are no per-play rows to attach leverage to.
+        # `oaa_situational` carries most of the weight because it is the one
+        # tilted toward the games that mattered; `oaa_rate` keeps a smaller
+        # share so a fielder whose batted balls we could not attribute still
+        # scores on something. The two are correlated by construction, which
+        # is why the split is uneven rather than 50/50.
+        #
+        # Unlike every other component, this one is NOT self-referenced
+        # against the player's own baseline -- OAA is a talent measure. If
+        # the leaderboard starts tracking WAR, look here first.
+        #
+        # `assists_blocks_lev` and `baserunning_lev` are specced but nothing
+        # computes them yet; they are kept at zero rather than deleted so the
+        # intended shape of the pillar stays visible.
         "hunt": {
-            "star_catch_lev":     {"weight": 0.40, "invert": False, "k": 25},
-            "attempt_rate":       {"weight": 0.25, "invert": False, "k": 40},
-            "assists_blocks_lev": {"weight": 0.15, "invert": False, "k": 30},
-            "baserunning_lev":    {"weight": 0.20, "invert": False, "k": 50},
+            "oaa_situational":    {"weight": 0.65, "invert": False, "k": 40},
+            "oaa_rate":           {"weight": 0.35, "invert": False, "k": 40},
+            "assists_blocks_lev": {"weight": 0.00, "invert": False, "k": 30},
+            "baserunning_lev":    {"weight": 0.00, "invert": False, "k": 50},
         },
         "fight": {
             "fight_rv_delta":     {"weight": 0.70, "invert": False, "k": 250},
