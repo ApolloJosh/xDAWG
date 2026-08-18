@@ -54,6 +54,14 @@ jobs:
       - name: Record dependency versions
         run: pip freeze | grep -iE "pandas|numpy|pyarrow|pybaseball|requests" || true
 
+      - name: Run tests
+        # Cheap, and it exercises the whole scoring path offline against
+        # synthetic Statcast with realistic nulls. Runs BEFORE the pull so a
+        # crash costs five seconds instead of forty-five minutes.
+        run: |
+          pip install pytest
+          python -m pytest tests/ -q
+
       - name: Restore Statcast cache
         # The expensive part is the Savant pull, not the scoring. Caching the
         # Parquet means a rerun after a code fix takes minutes instead of an
