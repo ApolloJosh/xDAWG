@@ -104,10 +104,14 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- site/data/data.js; then
-            echo "data.js unchanged; nothing to commit."
+          # index.html too: write_site_data stamps its data.js script tag
+          # with the build timestamp, and without that stamp a browser keeps
+          # serving the previously cached data.js and the site looks like it
+          # never deployed.
+          if git diff --quiet -- site/data/data.js site/index.html; then
+            echo "site unchanged; nothing to commit."
             exit 0
           fi
-          git add site/data/data.js
+          git add site/data/data.js site/index.html
           git commit -m "Real ${{ inputs.season }} data (run ${{ github.run_number }})"
           git push
