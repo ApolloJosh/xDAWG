@@ -170,13 +170,26 @@ def grit(p: pd.DataFrame) -> pd.DataFrame:
         on="pitcher", how="outer")
 
     # Willingness to work the inner half against same-handed hitters.
-    same = d[d["stand"] == d["p_throws"]].copy()
+    #
+    # Everything here is forced out of pandas' nullable extension dtypes and
+    # into plain numpy before any comparison. Statcast ships `plate_x` as
+    # Float64 and `stand` as string, both of which carry pd.NA rather than
+    # NaN -- so `px < -0.55` returns pd.NA, np.where propagates it into an
+    # object array, and `.astype(float)` then dies with "float() argument
+    # must be a real number, not 'NAType'" forty minutes into a build.
+    same_mask = (d["stand"] == d["p_throws"]).fillna(False).to_numpy(dtype=bool)
+    same = d[same_mask].copy()
     if not same.empty:
-        px = pd.to_numeric(same["plate_x"], errors="coerce")
-        inside = np.where(same["stand"] == "R", px < -0.55, px > 0.55)
-        same["_inside"] = inside.astype(float)
+        px = pd.to_numeric(same["plate_x"], errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan
+        )
+        is_rhb = (same["stand"] == "R").fillna(False).to_numpy(dtype=bool)
+        inside = np.where(is_rhb, px < -0.55, px > 0.55).astype(float)
+        # A pitch with no tracking data is unknown, not "not inside" -- leave
+        # it null so it is skipped by the mean rather than dragging it down.
+        same["_inside"] = np.where(np.isnan(px), np.nan, inside)
         ins = same.groupby("pitcher").agg(
-            pitching_inside=("_inside", "mean"), n=("_inside", "size")
+            pitching_inside=("_inside", "mean"), n=("_inside", "count")
         ).reset_index().rename(columns={"n": "pitching_inside__n"})
         out = out.merge(ins, on="pitcher", how="outer")
 
