@@ -1,0 +1,73 @@
+name: Probe leaderboard schemas
+
+# Asks each optional Savant leaderboard what columns it actually returns,
+# and reports which ones the pillar code can still find. ~30 seconds, no
+# pitch pull, writes nothing.
+#
+# Run this when a pillar term goes missing or a build dies on a KeyError.
+# All three of these sources degrade silently by design, which is right for
+# a build but means a rename otherwise shows up only as a quietly emptier
+# leaderboard.
+#
+# Trigger: Actions tab -> Probe leaderboard schemas -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: Season to probe
+        required: false
+        default: "2026"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xdawg-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Probe
+        env:
+          PYTHONWARNINGS: always
+          # Deliberately not cached: the whole point is to see what the
+          # source returns right now, not what it returned last build.
+          XDAWG_CACHE: ${{ runner.temp }}/xdawg_probe_cache
+        run: |
+          set -o pipefail
+          python -u -m xdawg probe --season "${{ inputs.season }}" 2>&1 | tee probe.log
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### xDAWG leaderboard schemas — season ${{ inputs.season }}"
+            echo
+            echo '```'
+            cat probe.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-log
+          path: probe.log
+          retention-days: 14
