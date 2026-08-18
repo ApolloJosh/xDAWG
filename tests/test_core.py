@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from xdawg.aggregate import compute, shrink, zscore  # noqa: E402
 from xdawg.config import COMPONENTS, SCALE  # noqa: E402
 from xdawg.fight import fight_weight, pythag  # noqa: E402
-from xdawg.leverage import weighted_delta  # noqa: E402
+from xdawg.leverage import clutch, weighted_delta  # noqa: E402
 
 RNG = np.random.default_rng(7)
 
@@ -75,6 +75,63 @@ def test_weighted_delta_detects_a_real_clutch_signal():
 
     delta = weighted_delta(df, "batter", "v")["delta"].iloc[0]
     assert 0.15 < delta < 0.25, f"expected a delta near 0.2, got {delta:.4f}"
+
+
+def test_clutch_is_zero_under_uniform_leverage():
+    """The WPA clutch term must not manufacture signal from flat leverage.
+
+    Same property as `test_weighted_delta_is_zero_under_uniform_weights`, and
+    it matters for the same reason: WPA already has leverage baked into it,
+    so a clutch term that failed this would just be re-reporting raw
+    production and would drag the leaderboard toward WAR.
+
+    Checked at a non-unit leverage too, because dividing by a constant other
+    than 1.0 is where a naive implementation stops cancelling.
+    """
+    rng = np.random.default_rng(451)
+    for level in (1.0, 2.5, 0.4):
+        df = pd.DataFrame({
+            "batter": np.repeat([1, 2, 3], 200),
+            "wpa": rng.normal(0, 0.05, 600),
+            "li": level,
+        })
+        out = clutch(df, "batter", min_n=10)
+        assert len(out) == 3, f"expected 3 players at li={level}"
+        assert np.allclose(out["wpa_clutch_delta"], 0.0, atol=1e-12), (
+            f"clutch is non-zero at flat leverage {level}"
+        )
+
+
+def test_clutch_ranks_by_when_not_how_much():
+    """Identical season totals, opposite timing: clutch must separate them.
+
+    Leverage alternates deterministically rather than being drawn at random,
+    so both players get exactly the same number of high- and low-leverage
+    trips and their WPA totals are identical to the last decimal. Anything
+    clutch reports is then purely about WHEN the production arrived -- which
+    is the only thing this term is allowed to measure.
+    """
+    n = 1200
+    li = np.where(np.arange(n) % 2 == 0, 2.6, 0.4)
+    big = li > 1
+    banked_late = np.where(big, 0.030, -0.010)
+    banked_early = np.where(big, -0.010, 0.030)
+
+    assert np.isclose(banked_late.sum(), banked_early.sum()), (
+        "fixture is only meaningful if the season totals match exactly"
+    )
+
+    df = pd.concat([
+        pd.DataFrame({"batter": 1, "wpa": banked_late, "li": li}),
+        pd.DataFrame({"batter": 2, "wpa": banked_early, "li": li}),
+    ])
+    out = clutch(df, "batter", min_n=10).set_index("batter")
+
+    assert out.loc[1, "wpa_clutch_delta"] > 0 > out.loc[2, "wpa_clutch_delta"], (
+        "clutch must reward when the production happened, not how much: "
+        f"got {out.loc[1, 'wpa_clutch_delta']:.4f} vs "
+        f"{out.loc[2, 'wpa_clutch_delta']:.4f}"
+    )
 
 
 def test_scale_is_centered_on_100():

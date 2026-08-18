@@ -282,5 +282,5 @@ def test_payload_builds_and_pillars_are_alive(offline):
         for c in pil["components"]
     }
     for key in ("availability", "hbp_above_expected", "extra_bases_taken",
-                "fight_process_delta"):
+                "fight_process_delta", "ev_situational", "wpa_clutch_delta"):
         assert key in present, f"{key} computed nothing"
