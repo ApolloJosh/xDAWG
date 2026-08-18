@@ -85,6 +85,88 @@ def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
     return out.rename(columns={"delta": "fight_rv_delta", "n": "fight_rv_delta__n"})
 
 
+def _fielding_context(p: pd.DataFrame, season: int) -> pd.DataFrame:
+    """Per-fielder situational exposure, for weighting a season-total OAA.
+
+    OAA arrives as one number per player for the whole year, so individual
+    plays cannot be weighted. What we can do is measure the situations that
+    player actually fielded in: `fielder_2`..`fielder_9` name the man at each
+    position on every pitch, so any batted ball can be attributed to the
+    fielder who handled it, and read for leverage and FIGHT weight.
+
+    Returns one row per player with `context`, the mean of leverage x FIGHT
+    weight over his batted balls, normalized so the league mean is 1.0. A
+    fielder who spent the year in tie games against contenders scores above
+    1; one who mopped up blowouts scores below.
+    """
+    loc_col = "hit_location"
+    fielder_cols = [c for c in ingest.FIELDER_COLS if c.startswith("fielder_")]
+    have = [c for c in fielder_cols if c in p.columns]
+    if loc_col not in p.columns or not have:
+        warnings.warn(
+            "no fielder attribution columns; HUNT uses unweighted OAA"
+        )
+        return pd.DataFrame(columns=["player_id", "context", "context__n"])
+
+    # Only balls actually fielded by someone carry a hit_location.
+    bip = p[pd.to_numeric(p[loc_col], errors="coerce").between(2, 9)].copy()
+    if bip.empty:
+        return pd.DataFrame(columns=["player_id", "context", "context__n"])
+
+    standings = ingest.load_standings(season)
+    quality = (
+        fight_mod.opponent_quality(standings)
+        if standings is not None and not standings.empty
+        else pd.Series(dtype=float)
+    )
+
+    batting_home = bip["inning_topbot"].astype(str).str.startswith("Bot")
+    # The fielding side is the one NOT batting.
+    own = np.where(batting_home, bip["away_team"], bip["home_team"])
+    opp = np.where(batting_home, bip["home_team"], bip["away_team"])
+
+    dates = pd.to_datetime(bip["game_date"], errors="coerce")
+    span = (dates.max() - dates.min()).days or 1
+    pct = (dates - dates.min()).dt.days / span
+
+    fight_w = fight_mod.fight_weight(
+        pd.Series(opp, index=bip.index),
+        pd.Series(own, index=bip.index),
+        pct,
+        quality,
+    )
+    lev = pd.to_numeric(bip.get("li", pd.Series(1.0, index=bip.index)),
+                        errors="coerce").fillna(1.0)
+
+    # Pick out the fielder at the position that handled the ball.
+    pos = pd.to_numeric(bip[loc_col], errors="coerce").astype("Int64")
+    who = pd.Series(pd.NA, index=bip.index, dtype="Float64")
+    for n in range(2, 10):
+        col = f"fielder_{n}"
+        if col in bip.columns:
+            who = who.mask(pos == n, pd.to_numeric(bip[col], errors="coerce"))
+
+    d = pd.DataFrame({
+        "player_id": who,
+        "_w": lev.to_numpy() * fight_w.to_numpy(),
+    }).dropna(subset=["player_id"])
+    if d.empty:
+        return pd.DataFrame(columns=["player_id", "context", "context__n"])
+
+    g = d.groupby("player_id").agg(
+        context=("_w", "mean"), context__n=("_w", "size")
+    ).reset_index()
+    g["player_id"] = g["player_id"].astype("int64")
+
+    mean_w = d["_w"].mean()
+    g["context"] = g["context"] / mean_w if mean_w else 1.0
+    print(
+        f"[xdawg] fielding context for {len(g):,} fielders "
+        f"({len(d):,} batted balls attributed)"
+    )
+    return g
+
+
 def run(
     season: int = SEASON_DEFAULT,
     refresh: bool = False,
@@ -103,6 +185,24 @@ def run(
     if p.empty:
         raise SystemExit("[xdawg] no pitches returned - check the season/date range")
 
+    # Statcast spells some clubs differently from config.TEAMS (Arizona is
+    # AZ there, ARI here). These raw codes feed the FIGHT opponent lookup and
+    # the site's league/division filters, both of which silently return
+    # nothing on a miss -- so an unnormalized club loses its opponent-quality
+    # weight without any error. Normalize once, here, and everything
+    # downstream keys on the same spelling.
+    for col in ("home_team", "away_team"):
+        if col in p.columns:
+            p[col] = p[col].map(ingest.normalize_team)
+    seen = set(p["home_team"].dropna()) | set(p["away_team"].dropna())
+    unknown = sorted(seen - set(TEAMS))
+    if unknown:
+        warnings.warn(
+            f"team codes not in config.TEAMS: {unknown} -- these clubs get no "
+            "division or opponent-quality weight; add them to "
+            "ingest.TEAM_ALIASES or config.TEAMS"
+        )
+
     print("[xdawg] computing empirical leverage index")
     p = add_leverage(p)
 
@@ -114,7 +214,7 @@ def run(
         H.bite(p),
         H.post_k_bounceback(p),
         H.grit(ingest.load_sprint_speed(season), None, None, None),
-        H.hunt(ingest.load_catch_probability(season), p),
+        H.hunt(ingest.load_oaa(season), _fielding_context(p, season)),
         _attach_fight(p, "batter", season),
     ]
     hit = _merge_all(h_frames, "batter").rename(columns={"batter": "player_id"})

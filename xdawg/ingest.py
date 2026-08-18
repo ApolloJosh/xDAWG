@@ -31,6 +31,13 @@ STATCAST_COLS = [
     "home_team", "away_team",
 ]
 
+# Needed to attribute a batted ball to the individual fielder who handled it,
+# which is what lets a season-total OAA be weighted by the leverage and
+# opponent quality that player was actually exposed to. Kept separate from
+# STATCAST_COLS so their absence is a degraded HUNT rather than a "schema
+# drift" alarm about the core feed.
+FIELDER_COLS = ["hit_location"] + [f"fielder_{i}" for i in range(2, 10)]
+
 
 def _cache_path(name: str) -> Path:
     return CACHE / f"{name}.parquet"
@@ -109,6 +116,15 @@ def load_statcast(
     if missing:
         warnings.warn(f"Statcast schema drift, missing columns: {sorted(missing)}")
 
+    fielders = [c for c in FIELDER_COLS if c in df.columns]
+    if len(fielders) < len(FIELDER_COLS):
+        warnings.warn(
+            "fielder columns missing: "
+            f"{sorted(set(FIELDER_COLS) - set(fielders))}; HUNT falls back to "
+            "unweighted OAA"
+        )
+    keep = keep + fielders
+
     df = df[keep].copy()
     df.to_parquet(path, index=False)
     return df
@@ -158,7 +174,67 @@ def load_catch_probability(season: int, refresh: bool = False) -> pd.DataFrame |
         return None
 
 
-OPTIONAL_LEADERBOARDS = ("sprint_speed", "catch_probability", "standings")
+def load_oaa(season: int, refresh: bool = False) -> pd.DataFrame | None:
+    """Outs Above Average for every fielder, not just outfielders.
+
+    The catch-probability leaderboard is the outfield slice only (249 players
+    in 2026). This endpoint covers all positions, which is what HUNT needs if
+    infielders and catchers are to be scored at all.
+
+    Savant has served this leaderboard under more than one query shape, so we
+    try each and keep the first that returns a usable frame. The one that
+    worked is printed, because that is the thing you need to know when it
+    stops working.
+    """
+    path = _cache_path(f"oaa_{season}")
+    if path.exists() and not refresh:
+        return pd.read_parquet(path)
+
+    import io
+    import requests
+
+    base = "https://baseballsavant.mlb.com/leaderboard/outs_above_average"
+    attempts = [
+        {"type": "Fielder", "startYear": season, "endYear": season,
+         "split": "no", "team": "", "range": "year", "min": "10",
+         "pos": "", "roles": "", "viz": "show", "csv": "true"},
+        {"type": "Fielder", "year": season, "min": "10", "pos": "",
+         "team": "", "csv": "true"},
+    ]
+
+    errors = []
+    for i, params in enumerate(attempts, 1):
+        try:
+            r = requests.get(base, params=params, timeout=60)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            if df.empty:
+                raise ValueError("empty frame")
+            if pick_col(df, "outs_above_average", "oaa") is None:
+                raise ValueError(f"no OAA column in {list(df.columns)}")
+            print(f"[xdawg] oaa: endpoint shape {i} worked, {len(df)} fielders")
+            print(f"[xdawg] oaa columns: {list(df.columns)}")
+            df.to_parquet(path, index=False)
+            return df
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"shape {i}: {e}")
+
+    # Outfield-only fallback: better a partial HUNT than a dead pillar.
+    catches = load_catch_probability(season, refresh=refresh)
+    if catches is not None and pick_col(catches, "oaa") is not None:
+        warnings.warn(
+            "all-position OAA unavailable (" + "; ".join(errors)
+            + "); falling back to the outfield-only leaderboard"
+        )
+        return catches
+
+    warnings.warn(
+        "OAA unavailable (" + "; ".join(errors) + "); HUNT term dropped"
+    )
+    return None
+
+
+OPTIONAL_LEADERBOARDS = ("sprint_speed", "catch_probability", "oaa", "standings")
 
 
 def probe(season: int) -> int:
@@ -174,12 +250,15 @@ def probe(season: int) -> int:
     loaders = {
         "sprint_speed": lambda: load_sprint_speed(season),
         "catch_probability": lambda: load_catch_probability(season, refresh=True),
-        "standings": lambda: load_standings(season),
+        "oaa": lambda: load_oaa(season, refresh=True),
+        "standings": lambda: load_standings(season, refresh=True),
     }
     # What each pillar term needs from that source.
     needed = {
         "sprint_speed": ("batter", "sprint_speed", "hp_to_1b"),
-        "catch_probability": ("player_id", "catch_probability", "caught", "attempted"),
+        "catch_probability": ("player_id", "oaa"),
+        "oaa": ("player_id", "outs_above_average", "n_fielding_opportunities",
+                "primary_pos_formatted"),
         "standings": ("team", "rs", "ra"),
     }
 
@@ -209,22 +288,120 @@ def probe(season: int) -> int:
     return dead
 
 
-def load_standings(season: int) -> pd.DataFrame | None:
+# Statcast, StatsAPI and config.TEAMS do not agree on every abbreviation.
+# Everything is normalized to the config.TEAMS spelling, which is what the
+# site and the FIGHT opponent lookup key on.
+TEAM_ALIASES = {
+    "AZ": "ARI", "ARZ": "ARI",
+    "CHW": "CWS", "CHA": "CWS", "CHN": "CHC",
+    "OAK": "ATH",
+    "WAS": "WSH", "WSN": "WSH",
+    "SDP": "SD", "SFG": "SF", "TBR": "TB", "KCR": "KC",
+    "NYA": "NYY", "NYN": "NYM", "LAN": "LAD", "SLN": "STL",
+}
+
+
+def normalize_team(code: str) -> str:
+    """Map any known abbreviation spelling onto the config.TEAMS one."""
+    c = str(code).strip().upper()
+    return TEAM_ALIASES.get(c, c)
+
+
+def _standings_from_statsapi(season: int) -> pd.DataFrame:
+    """Team runs scored / allowed from MLB's own API.
+
+    pybaseball routes this through FanGraphs, which 403s CI runners and any
+    other datacentre IP. StatsAPI is MLB's public endpoint, needs no key,
+    and is not IP-blocked -- so FIGHT keeps its opponent-quality term on CI
+    instead of silently collapsing to flat weights.
+    """
+    import requests
+
+    from .config import TEAMS
+
+    teams = requests.get(
+        "https://statsapi.mlb.com/api/v1/teams",
+        params={"sportId": 1, "season": season},
+        timeout=60,
+    )
+    teams.raise_for_status()
+    abbr = {
+        t["id"]: normalize_team(t.get("abbreviation", ""))
+        for t in teams.json().get("teams", [])
+    }
+
+    standings = requests.get(
+        "https://statsapi.mlb.com/api/v1/standings",
+        params={
+            "leagueId": "103,104",
+            "season": season,
+            "standingsTypes": "regularSeason",
+        },
+        timeout=60,
+    )
+    standings.raise_for_status()
+
+    rows = []
+    for record in standings.json().get("records", []):
+        for tr in record.get("teamRecords", []):
+            tid = tr.get("team", {}).get("id")
+            rows.append({
+                "team": abbr.get(tid, ""),
+                "rs": float(tr.get("runsScored") or 0),
+                "ra": float(tr.get("runsAllowed") or 0),
+            })
+
+    df = pd.DataFrame(rows)
+    df = df[(df["team"] != "") & (df["rs"] > 0) & (df["ra"] > 0)]
+    if df.empty:
+        raise ValueError("StatsAPI returned no usable team records")
+
+    unknown = sorted(set(df["team"]) - set(TEAMS))
+    if unknown:
+        warnings.warn(
+            f"standings: team codes not in config.TEAMS: {unknown} -- "
+            "these teams get no opponent-quality weight; add them to "
+            "TEAM_ALIASES or TEAMS"
+        )
+    missing = sorted(set(TEAMS) - set(df["team"]))
+    if missing:
+        warnings.warn(f"standings: no runs data for {missing}")
+
+    print(f"[xdawg] standings: {len(df)} teams from StatsAPI")
+    return df.reset_index(drop=True)
+
+
+def load_standings(season: int, refresh: bool = False) -> pd.DataFrame | None:
     """Team runs scored / allowed, for the FIGHT opponent-quality term."""
     path = _cache_path(f"standings_{season}")
-    if path.exists():
+    if path.exists() and not refresh:
         return pd.read_parquet(path)
+
+    errors = []
     try:
+        df = _standings_from_statsapi(season)
+        df.to_parquet(path, index=False)
+        return df
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"StatsAPI: {e}")
+
+    try:  # FanGraphs, via pybaseball -- works locally, 403s on CI
         from pybaseball import team_batting, team_pitching
 
         tb = team_batting(season)[["Team", "R"]].rename(columns={"R": "rs"})
         tp = team_pitching(season)[["Team", "R"]].rename(columns={"R": "ra"})
         df = tb.merge(tp, on="Team").rename(columns={"Team": "team"})
+        df["team"] = df["team"].map(normalize_team)
         df.to_parquet(path, index=False)
         return df
     except Exception as e:  # noqa: BLE001
-        warnings.warn(f"standings unavailable ({e}); FIGHT falls back to flat weights")
-        return None
+        errors.append(f"FanGraphs: {e}")
+
+    warnings.warn(
+        "standings unavailable (" + "; ".join(errors)
+        + "); FIGHT falls back to flat weights"
+    )
+    return None
 
 
 def player_names(pitches: pd.DataFrame) -> dict[int, str]:
