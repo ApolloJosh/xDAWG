@@ -11,6 +11,11 @@ import pandas as pd
 from .. import ingest
 from ..leverage import weighted_delta
 
+# Fallback opportunity count when no source publishes one. Roughly a
+# regular's season of chances, so shrinkage stays in a sane range instead of
+# collapsing the pillar to zero.
+HUNT_NOMINAL_OPPORTUNITIES = 200
+
 WHIFFS = {"swinging_strike", "swinging_strike_blocked", "missed_bunt"}
 SWINGS = WHIFFS | {"foul", "foul_tip", "hit_into_play", "foul_bunt"}
 
@@ -202,43 +207,44 @@ def hunt(
         "_oaa": pd.to_numeric(c[oaa_col], errors="coerce"),
     }).dropna(subset=["player_id"])
 
-    # Opportunity count. Check for per-star buckets FIRST: the outfield
-    # fallback frame splits opportunities across n_opp_1stars..n_opp_5stars
-    # with no total column, and a loose name match would silently seize one
-    # bucket and treat it as the whole season -- which inflated a 108-chance
-    # fielder's rate nearly sevenfold before this was caught.
+    # --- opportunity count, in descending order of trust ------------------
+    #
+    # This matters more than it looks. `n` is the shrinkage denominator
+    # (z * n / (n + k)), so if every player ends up with n = 0 then every
+    # HUNT z shrinks to exactly 0.0 -- a silently dead pillar rather than an
+    # error. The all-position OAA leaderboard ships NO opportunity column at
+    # all, so the fallbacks below are the normal path, not an edge case.
+
+    # 1. Per-star buckets, checked FIRST. The outfield frame splits
+    #    opportunities across n_opp_1stars..n_opp_5stars with no total, and a
+    #    loose name match would seize one bucket and treat it as the whole
+    #    season -- which inflated a 108-chance fielder's rate sevenfold.
     buckets = [
         x for x in c.columns
         if re.fullmatch(r"n_opp_\d+stars?", str(x).strip().lower())
     ]
+    opp_col = ingest.pick_col(
+        c, "n_fielding_opportunities", "opportunities", "attempts", "n_opp"
+    )
+    source = None
     if len(buckets) >= 2:
         g["_opp"] = (
             c[buckets].apply(pd.to_numeric, errors="coerce").sum(axis=1).to_numpy()
         )
+        source = f"summed {len(buckets)} star buckets"
+    elif opp_col is not None:
+        g["_opp"] = pd.to_numeric(c[opp_col], errors="coerce").to_numpy()
+        source = f"column {opp_col!r}"
     else:
-        opp_col = ingest.pick_col(
-            c, "n_fielding_opportunities", "opportunities", "attempts", "n_opp"
-        )
-        if opp_col is not None:
-            g["_opp"] = pd.to_numeric(c[opp_col], errors="coerce").to_numpy()
-        else:
-            g["_opp"] = np.nan
-            warnings.warn(
-                "OAA has no opportunity count; HUNT uses unnormalized OAA, "
-                "which favours full-time fielders"
-            )
+        g["_opp"] = np.nan
 
     g["player_id"] = g["player_id"].astype("int64")
     g = g.groupby("player_id", as_index=False).agg(
         _oaa=("_oaa", "sum"), _opp=("_opp", "sum")
     )
 
-    # Rate, not total, so a part-time fielder is not automatically penalised.
-    denom = g["_opp"].where(g["_opp"] > 0)
-    g["oaa_rate"] = (g["_oaa"] / denom).fillna(0.0) if denom.notna().any() else g["_oaa"]
-    g["oaa_rate__n"] = g["_opp"].fillna(0.0).clip(lower=0)
-
-    # Scale by the situations he actually fielded in.
+    # Attach the situational context now -- its play count doubles as the
+    # best available opportunity proxy when the leaderboard has none.
     if context is not None and not context.empty and "context" in context.columns:
         ctx = context[["player_id", "context", "context__n"]].copy()
         ctx["player_id"] = pd.to_numeric(ctx["player_id"], errors="coerce")
@@ -252,6 +258,61 @@ def hunt(
     else:
         g["context"] = 1.0
         g["context__n"] = 0.0
+
+    # 2. Balls we actually attributed to him in the pitch data. Counts plays
+    #    handled rather than true chances (a ball he never reached has no
+    #    hit_location pointing at him), but it is measured from our own data
+    #    and cannot divide by zero.
+    if g["_opp"].isna().all() or (g["_opp"].fillna(0) <= 0).all():
+        if (g["context__n"] > 0).any():
+            g["_opp"] = g["context__n"].where(g["context__n"] > 0)
+            source = "batted balls attributed from the pitch data"
+        else:
+            # 3. Back it out of the published rates: OAA is roughly
+            #    (actual - expected) * chances, so chances ~ OAA / diff.
+            #    Rounded to whole percent upstream, so this is coarse -- fine
+            #    for a shrinkage denominator, not for a headline number.
+            diff_col = ingest.pick_col(
+                c, "diff_success_rate_formatted", "diff_success_rate"
+            )
+            est = None
+            if diff_col is not None:
+                diff = pd.to_numeric(
+                    c[diff_col].astype(str).str.replace("%", "", regex=False),
+                    errors="coerce",
+                ) / 100.0
+                ids = pd.to_numeric(c[id_col], errors="coerce")
+                frame = pd.DataFrame({"player_id": ids, "_d": diff}).dropna()
+                frame["player_id"] = frame["player_id"].astype("int64")
+                frame = frame.groupby("player_id", as_index=False)["_d"].mean()
+                merged = g.merge(frame, on="player_id", how="left")
+                # Only trust it where the rounded diff is big enough to divide by.
+                usable = merged["_d"].abs() >= 0.005
+                est = (merged["_oaa"] / merged["_d"].where(usable)).abs()
+            if est is not None and est.notna().any():
+                g["_opp"] = est
+                source = f"estimated from {diff_col!r}"
+            else:
+                # 4. Last resort: a flat nominal count. Deliberately NOT zero
+                #    -- zero would shrink the entire pillar to nothing and
+                #    read as "no dawgs in baseball" rather than as a failure.
+                g["_opp"] = float(HUNT_NOMINAL_OPPORTUNITIES)
+                source = (
+                    f"nominal {HUNT_NOMINAL_OPPORTUNITIES} (no opportunity "
+                    "data anywhere)"
+                )
+                warnings.warn(
+                    "HUNT has no opportunity count from any source; using a "
+                    "flat nominal value, so shrinkage no longer distinguishes "
+                    "full-time fielders from part-timers"
+                )
+
+    print(f"[xdawg] hunt: opportunities from {source}")
+
+    # Rate, not total, so a part-time fielder is not automatically penalised.
+    denom = g["_opp"].where(g["_opp"] > 0)
+    g["oaa_rate"] = (g["_oaa"] / denom).fillna(0.0)
+    g["oaa_rate__n"] = g["_opp"].fillna(0.0).clip(lower=0)
 
     g["oaa_situational"] = g["oaa_rate"] * g["context"]
     # Confidence in the situational term is limited by BOTH the fielding
