@@ -52,12 +52,29 @@ def test_weighted_delta_is_zero_under_uniform_weights():
 
 
 def test_weighted_delta_detects_a_real_clutch_signal():
-    """A hitter who genuinely improves under leverage must score positive."""
-    n = 400
-    li = RNG.choice([0.5, 2.5], n)
-    v = np.where(li > 1, RNG.normal(0.6, 1, n), RNG.normal(0.0, 1, n))
+    """A hitter who genuinely improves under leverage must score positive.
+
+    Half the pitches come at li=2.5 carrying a +0.6 mean shift, half at
+    li=0.5 with none, so the expected answer is analytic: the flat mean is
+    0.3, the leverage-weighted mean is (2.5 * 0.6) / (2.5 + 0.5) = 0.5, and
+    the delta is 0.2. Asserting a band around that rather than a bare floor
+    catches the estimate drifting high as well as low.
+
+    Uses its own generator instead of the module-level RNG: sharing one
+    generator makes every test's draws depend on which tests ran before it,
+    so a test can pass in a full run and fail when run alone. n is also
+    large enough that sampling error is small next to the band -- at the
+    original n=400 the estimate fell outside it on roughly one seed in ten,
+    which made this test a coin flip rather than a check.
+    """
+    rng = np.random.default_rng(20260818)
+    n = 8_000
+    li = rng.choice([0.5, 2.5], n)
+    v = np.where(li > 1, rng.normal(0.6, 1, n), rng.normal(0.0, 1, n))
     df = pd.DataFrame({"batter": 1, "v": v, "li": li})
-    assert weighted_delta(df, "batter", "v")["delta"].iloc[0] > 0.15
+
+    delta = weighted_delta(df, "batter", "v")["delta"].iloc[0]
+    assert 0.15 < delta < 0.25, f"expected a delta near 0.2, got {delta:.4f}"
 
 
 def test_scale_is_centered_on_100():
