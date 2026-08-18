@@ -108,3 +108,62 @@ def weighted_delta(
     g = g[g["n"] >= min_n]
     g["delta"] = (g["_sum_wv"] / g["_sum_w"]) - g["flat"]
     return g.reset_index()[[group, "delta", "n"]]
+
+
+def clutch(
+    pa: pd.DataFrame,
+    group: str,
+    wpa: str = "wpa",
+    weight: str = "li",
+    min_n: int = 100,
+) -> pd.DataFrame:
+    """FanGraphs' Clutch, computed in-house rather than scraped.
+
+        Clutch = WPA / pLI  -  WPA/LI
+
+    where pLI is the player's mean leverage and WPA/LI is his context-neutral
+    win contribution, the sum of each plate appearance's WPA divided by the
+    leverage it occurred in. The difference is how much better he did when it
+    mattered than his own overall production predicts.
+
+    Why compute it instead of pulling it: FanGraphs 403s datacentre IPs, so a
+    CI build cannot reach it -- and our leverage index is derived empirically
+    from the season being measured rather than from a static table, so the
+    in-house version is actually the better-matched one.
+
+    Note WPA already has leverage baked in (a homer in a tie game moves win
+    expectancy far more than the same swing in a blowout), which is why this
+    DIVIDES by leverage to neutralize it rather than multiplying the way
+    `weighted_delta` does. Multiplying would count leverage twice.
+
+    Returned as a per-plate-appearance rate so it does not double as a
+    playing-time proxy. Under flat leverage it is exactly zero, the same
+    invariant `weighted_delta` holds -- if that ever breaks, this has started
+    measuring raw production instead of production-under-pressure.
+    """
+    d = pa[[group, wpa, weight]].copy()
+    d[wpa] = pd.to_numeric(d[wpa], errors="coerce")
+    d[weight] = pd.to_numeric(d[weight], errors="coerce")
+    d = d.dropna()
+    d = d[d[weight] > 0]
+    if d.empty:
+        return pd.DataFrame(columns=[group, "wpa_clutch_delta",
+                                     "wpa_clutch_delta__n"])
+
+    d["_neutral"] = d[wpa] / d[weight]
+    g = d.groupby(group).agg(
+        _wpa=(wpa, "sum"), _pli=(weight, "mean"),
+        _neutral=("_neutral", "sum"), n=(wpa, "size"),
+    )
+    g = g[g["n"] >= min_n]
+    if g.empty:
+        return pd.DataFrame(columns=[group, "wpa_clutch_delta",
+                                     "wpa_clutch_delta__n"])
+
+    g["wpa_clutch_delta"] = (
+        (g["_wpa"] / g["_pli"].where(g["_pli"] > 0)) - g["_neutral"]
+    ) / g["n"]
+    g["wpa_clutch_delta"] = g["wpa_clutch_delta"].fillna(0.0)
+    return g.reset_index().rename(columns={"n": "wpa_clutch_delta__n"})[
+        [group, "wpa_clutch_delta", "wpa_clutch_delta__n"]
+    ]

@@ -53,7 +53,12 @@ COMPONENTS = {
             "chase_contact":      {"weight": 0.12, "invert": False, "k": 100},
             "pitches_per_pa_delta": {"weight": 0.25, "invert": False, "k": 90},
             "two_strike_foul_delta": {"weight": 0.20, "invert": False, "k": 120},
-            "hard_hit_delta":     {"weight": 0.08, "invert": False, "k": 200},
+            # Continuous exit velocity, not a binary >=95mph flag: no cliff
+            # at 94.9, and it uses the whole distribution. Replaces
+            # hard_hit_delta rather than joining it -- two measures of the
+            # same thing splitting weight is how whiff_delta and
+            # chase_contact ended up correlated at 0.738.
+            "ev_situational":     {"weight": 0.10, "invert": False, "k": 200},
             "post_k_bounceback":  {"weight": 0.05, "invert": False, "k": 80},
         },
         "grit": {
@@ -83,8 +88,19 @@ COMPONENTS = {
             # build the two correlated at r = 0.994 -- one number drawing
             # two weights. The situational version carries the pillar
             # because when the plays happened is the whole point.
-            "oaa_situational":    {"weight": 1.00, "invert": False, "k": 40},
+            "oaa_situational":    {"weight": 0.65, "invert": False, "k": 40},
             "oaa_rate":           {"weight": 0.00, "invert": False, "k": 40},
+            # Win probability added against the player's own context-neutral
+            # rate -- FanGraphs' Clutch, computed in-house. This is what
+            # makes hitter HUNT mean "the hit that wins it" and not just
+            # "the catch that saves it"; before it, hitter HUNT was purely
+            # fielding while pitcher HUNT was situational performance.
+            #
+            # k is deliberately huge. Clutch has notoriously low year-over-
+            # year signal, and one of xDAWG's pass conditions is beating raw
+            # clutch metrics on stability -- so this needs a full season of
+            # evidence before it moves anybody much.
+            "wpa_clutch_delta":   {"weight": 0.35, "invert": False, "k": 350},
             "assists_blocks_lev": {"weight": 0.00, "invert": False, "k": 30},
             "baserunning_lev":    {"weight": 0.00, "invert": False, "k": 50},
         },
@@ -117,6 +133,21 @@ COMPONENTS = {
             "fight_process_delta": {"weight": 0.30, "invert": False, "k": 220},
         },
     },
+}
+
+# ---------------------------------------------------------------------------
+# The in-house "stuff" proxy, z-scored against each pitcher's OWN baseline
+# for each pitch type. Asks "is his slider still his slider in the 7th",
+# never "is his slider good", which keeps it a pure process measure.
+#
+# Spin was pulled from Statcast but unused until it was added here.
+# ---------------------------------------------------------------------------
+
+STUFF_WEIGHTS = {
+    "_velo": 0.40,
+    "_move": 0.35,
+    "_spin": 0.15,
+    "_ext":  0.10,
 }
 
 # ---------------------------------------------------------------------------

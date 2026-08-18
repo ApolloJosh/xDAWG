@@ -240,6 +240,7 @@ def run(
         H.grit(ingest.load_sprint_speed(season), H.hbp_frame(p),
                H.xbt_frame(p), H.availability_frame(p)),
         H.hunt(ingest.load_oaa(season), _fielding_context(p, season)),
+        H.clutch_frame(p),
         _attach_fight(p, "batter", season),
     ]
     hit = _merge_all(h_frames, "batter").rename(columns={"batter": "player_id"})
