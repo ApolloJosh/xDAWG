@@ -102,7 +102,7 @@ def build_payload(
     return {
         "season": season,
         "synthetic": synthetic,
-        "generated": pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "generated": pd.Timestamp.now("UTC").strftime("%Y-%m-%d %H:%M UTC"),
         "pillars": list(PILLARS),
         "teams": sorted(TEAMS),
         "players": players,
