@@ -45,9 +45,14 @@ COMPONENTS = {
             # The extended at-bat, not the disciplined one. Whiff is primary;
             # chasing and surviving it is a POSITIVE.
             "whiff_delta":        {"weight": 0.30, "invert": True,  "k": 150},
-            "chase_contact":      {"weight": 0.22, "invert": False, "k": 100},
-            "pitches_per_pa_delta": {"weight": 0.20, "invert": False, "k": 90},
-            "two_strike_foul_delta": {"weight": 0.15, "invert": False, "k": 120},
+            # chase_contact correlates 0.738 with whiff_delta on real data --
+            # both are whiff-avoidance under leverage -- so at 0.22 the two
+            # of them held 52% of BITE between them. Weight moved to the
+            # terms that measure something else: grinding the count and
+            # refusing to be put away.
+            "chase_contact":      {"weight": 0.12, "invert": False, "k": 100},
+            "pitches_per_pa_delta": {"weight": 0.25, "invert": False, "k": 90},
+            "two_strike_foul_delta": {"weight": 0.20, "invert": False, "k": 120},
             "hard_hit_delta":     {"weight": 0.08, "invert": False, "k": 200},
             "post_k_bounceback":  {"weight": 0.05, "invert": False, "k": 80},
         },
@@ -73,8 +78,13 @@ COMPONENTS = {
         # computes them yet; they are kept at zero rather than deleted so the
         # intended shape of the pillar stays visible.
         "hunt": {
-            "oaa_situational":    {"weight": 0.65, "invert": False, "k": 40},
-            "oaa_rate":           {"weight": 0.35, "invert": False, "k": 40},
+            # oaa_rate is kept at zero weight, not deleted: oaa_situational
+            # IS oaa_rate times the context index, and on the first real
+            # build the two correlated at r = 0.994 -- one number drawing
+            # two weights. The situational version carries the pillar
+            # because when the plays happened is the whole point.
+            "oaa_situational":    {"weight": 1.00, "invert": False, "k": 40},
+            "oaa_rate":           {"weight": 0.00, "invert": False, "k": 40},
             "assists_blocks_lev": {"weight": 0.00, "invert": False, "k": 30},
             "baserunning_lev":    {"weight": 0.00, "invert": False, "k": 50},
         },

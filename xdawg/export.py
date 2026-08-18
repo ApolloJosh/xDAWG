@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -75,10 +76,14 @@ def build_payload(
                 breakdown[p] = {
                     "z": _clean(r.get(p)),
                     "weight": PILLAR_WEIGHTS[role][key],
+                    # Zero-weight components are omitted: they are kept in
+                    # config to document the intended shape of a pillar, but
+                    # showing one in the breakdown panel implies it moved the
+                    # score when it contributed exactly nothing.
                     "components": [
                         {"key": c, "label": LABELS.get(c, c), "z": _clean(r.get(f"_c_{c}"))}
-                        for c in COMPONENTS[role][key]
-                        if _clean(r.get(f"_c_{c}")) is not None
+                        for c, cfg in COMPONENTS[role][key].items()
+                        if cfg["weight"] > 0 and _clean(r.get(f"_c_{c}")) is not None
                     ],
                 }
             players.append({
@@ -123,4 +128,32 @@ def write_site_data(payload: dict, site_dir: str | Path) -> Path:
         "window.XDAWG_DATA = " + json.dumps(payload, separators=(",", ":")) + ";\n",
         encoding="utf-8",
     )
+    _stamp_cache_buster(site_dir, payload.get("generated", ""))
     return out
+
+
+# Matches `src="data/data.js"` with or without an existing ?v= stamp.
+_DATA_SRC = re.compile(r'src="data/data\.js(?:\?v=[^"]*)?"')
+
+
+def _stamp_cache_buster(site_dir: Path, generated: str) -> None:
+    """Version the data.js script tag so browsers pick up a new build.
+
+    `index.html` is a static file at a stable URL, so a browser that has
+    already cached `data/data.js` will keep serving the old numbers after a
+    deploy -- the page looks stale even though the file on the server is
+    correct. This bit us once: a successful build sat live for an hour
+    looking like it had never deployed.
+
+    Rewriting the tag to `data/data.js?v=<build timestamp>` gives each build
+    a distinct URL, so the fetch misses cache exactly when it should and
+    keeps hitting it the rest of the time.
+    """
+    index = site_dir / "index.html"
+    if not index.exists():
+        return
+    version = "".join(ch for ch in str(generated) if ch.isdigit()) or "0"
+    html = index.read_text(encoding="utf-8")
+    stamped, n = _DATA_SRC.subn(f'src="data/data.js?v={version}"', html)
+    if n and stamped != html:
+        index.write_text(stamped, encoding="utf-8")

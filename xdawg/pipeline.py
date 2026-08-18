@@ -76,13 +76,37 @@ def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
         quality,
     )
 
+    # Process alongside outcome. `fight_rv_delta` is run value, which FIGHT
+    # is allowed to use because divisional and quality-opponent samples are
+    # four to five times a leverage sample -- but run value still carries
+    # every bit of batted-ball luck in it. Contact-on-swing is the same
+    # question asked of the approach instead of the result, and it stabilizes
+    # far faster. Without it FIGHT was a single component carrying 30% of a
+    # hitter's score.
+    from .pillars.hitters import tag_pitch_events
+
+    d = tag_pitch_events(d)
+    # Higher is better for both roles: the hitter wants contact, the pitcher
+    # wants the miss.
+    d["_proc"] = d["is_whiff"].astype(float)
+    if who == "batter":
+        d["_proc"] = 1.0 - d["_proc"]
+    swings = d[d["is_swing"]]
+
     pa = d.groupby([who, "game_pk", "at_bat_number"]).agg(
         rv=("delta_run_exp", "sum"), fight_w=("fight_w", "first")
     ).reset_index()
     pa["rv"] = pa["rv"] * sign
 
     out = fight_mod.fight_delta(pa, who, "rv", "fight_w", min_n=60)
-    return out.rename(columns={"delta": "fight_rv_delta", "n": "fight_rv_delta__n"})
+    out = out.rename(columns={"delta": "fight_rv_delta", "n": "fight_rv_delta__n"})
+
+    if not swings.empty:
+        proc = fight_mod.fight_delta(swings, who, "_proc", "fight_w", min_n=80)
+        proc = proc.rename(columns={"delta": "fight_process_delta",
+                                    "n": "fight_process_delta__n"})
+        out = out.merge(proc, on=who, how="outer")
+    return out
 
 
 def _fielding_context(p: pd.DataFrame, season: int) -> pd.DataFrame:
@@ -213,7 +237,8 @@ def run(
     h_frames = [
         H.bite(p),
         H.post_k_bounceback(p),
-        H.grit(ingest.load_sprint_speed(season), None, None, None),
+        H.grit(ingest.load_sprint_speed(season), H.hbp_frame(p),
+               H.xbt_frame(p), H.availability_frame(p)),
         H.hunt(ingest.load_oaa(season), _fielding_context(p, season)),
         _attach_fight(p, "batter", season),
     ]
