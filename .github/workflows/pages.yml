@@ -15,9 +15,13 @@ permissions:
   pages: write
   id-token: write
 
+# Allow one deployment at a time, skipping runs queued behind the latest.
+# Do NOT cancel in-progress runs: a half-cancelled deploy leaves the Pages
+# deployment stuck "in progress" on GitHub's side, which then blocks the
+# next one with a 400.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
