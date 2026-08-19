@@ -53,6 +53,48 @@ th[aria-sort]{color:var(--primary)}
 .controls{display:flex;gap:14px;flex-wrap:wrap;align-items:end;margin:8px 0 12px}
 .field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 select,input{font-family:var(--body);font-size:14px;padding:5px 7px;border:2px solid var(--rule);background:#fff}
+/* ---------- club trajectory chart ----------
+   Slots 1-4 of the reference categorical palette, validated all-pairs on a
+   white surface (worst CVD dE 9.2, worst normal-vision dE 16.3). Only PINNED
+   clubs are colored; the other 29 stay a single recessive gray, so color
+   never has to separate thirty things. Pins cap at four -- a fifth would mean
+   inventing a hue, and the fifth hue is where the palette stops passing. */
+.viz{--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#4a3aa7;
+  --grid:#e8e8e6;--axis:#8a8a86;--faint:#cfcfcb}
+.chartwrap{position:relative;border:2px solid var(--rule);padding:10px 6px 4px;margin-bottom:10px}
+.chartwrap svg{display:block;width:100%;height:auto}
+.tline{fill:none;stroke:var(--faint);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.tline.dim{stroke:#e4e4e1}
+.tline.hot{stroke:var(--ink);stroke-width:2.5}
+.thit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}
+.tdot{stroke:#fff;stroke-width:2}
+.thitdot{fill:transparent;cursor:pointer}
+.gridline{stroke:var(--grid);stroke-width:1}
+.zeroline{stroke:var(--axis);stroke-width:1.5;stroke-dasharray:4 3}
+.axtext{font-family:var(--body);font-size:11px;fill:var(--muted)}
+.endlab{font-family:var(--display);font-size:13px;letter-spacing:.04em}
+.tip{position:absolute;pointer-events:none;background:#fff;border:2px solid var(--rule);
+  padding:7px 9px;font-size:12px;line-height:1.4;min-width:170px;z-index:5;box-shadow:3px 3px 0 rgba(0,0,0,.12)}
+.tip b{font-family:var(--display);letter-spacing:.04em;font-size:14px}
+.tip .r{display:flex;justify-content:space-between;gap:14px}
+.tip .r span:last-child{font-variant-numeric:tabular-nums}
+.segbtn{font:inherit;font-size:12px;cursor:pointer;background:#fff;color:var(--ink);
+  border:2px solid var(--rule);padding:4px 10px;text-transform:uppercase;letter-spacing:.04em}
+.segbtn+.segbtn{border-left-width:1px}
+.segbtn.on{background:var(--ink);color:#fff}
+.seg{display:flex;flex-wrap:wrap}
+.pins{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0 2px;min-height:26px;font-size:12px}
+.pinchip{display:inline-flex;align-items:center;gap:6px;border:2px solid var(--rule);padding:2px 8px;cursor:pointer}
+.pinchip i{width:11px;height:11px;display:block}
+.pinhint{color:var(--muted)}
+.selcard{border:2px solid var(--rule);border-top:none;padding:10px 12px;margin-bottom:24px;font-size:13px;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:4px 18px}
+.selcard .k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.selcard .v{font-family:var(--display);font-size:20px}
+.selcard .full{grid-column:1/-1;font-size:12px;color:var(--muted)}
+/* display:grid beats [hidden]'s display:none, so an unselected card renders
+   as an empty bordered strip unless this says otherwise. */
+.selcard[hidden]{display:none}
 .notice{background:var(--accent);border:3px solid var(--rule);padding:14px;margin:30px 0;font-size:14px}
 .notice code{background:#fff;padding:1px 5px;border:1px solid var(--rule)}
 .miss{color:var(--muted)}
@@ -98,6 +140,44 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
       than real W-L, so these are not circular.</p>
     <div class="cards" id="corr"></div>
 
+    <h2 class="section-head">Club trajectories</h2>
+    <p class="section-sub" id="chart-sub">Every club is drawn. Hover a line to bring it
+      forward, click it to pin it in color, click a dot for that club-season in full.
+      Up to four pins at once.</p>
+    <div class="controls">
+      <div class="field">
+        <label>Stat</label>
+        <div class="seg" id="statseg">
+          <button class="segbtn on" data-stat="dawg">DAWG</button>
+          <button class="segbtn" data-stat="dawg_plus">DAWG+</button>
+          <button class="segbtn" data-stat="wdawg">wDAWG</button>
+          <button class="segbtn" data-stat="wdawg_plus">wDAWG+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>View</label>
+        <div class="seg" id="modeseg">
+          <button class="segbtn on" data-mode="value">Value</button>
+          <button class="segbtn" data-mode="delta">Vs. actual wins</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>League</label>
+        <div class="seg" id="lgseg">
+          <button class="segbtn on" data-lg="ALL">MLB</button>
+          <button class="segbtn" data-lg="AL">AL</button>
+          <button class="segbtn" data-lg="NL">NL</button>
+        </div>
+      </div>
+    </div>
+    <div class="pins" id="pins"></div>
+    <div class="chartwrap viz" id="chartwrap">
+      <svg id="chart" viewBox="0 0 1080 430" role="img"
+           aria-label="Club DAWG by season. The same numbers are in the club table below."></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <div class="selcard viz" id="selcard" hidden></div>
+
     <h2 class="section-head">Careers</h2>
     <p class="section-sub">Mean DAWG+ across the window, with the standard deviation
       beside it. A low spread with a high mean is the profile the metric is looking
@@ -140,7 +220,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     leaderboard, the design has failed.</div>
 </footer>
 
-<script src="data/history.js?v=202608192016" onerror="window.__nohist=1"></script>
+<script src="data/history.js" onerror="window.__nohist=1"></script>
 <script>
 (function(){
   var H = window.XDAWG_HISTORY;
@@ -191,6 +271,301 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
         '<div class="n">n = ' + c.n + ' club-seasons</div>' +
         '<div class="why">' + esc(lab[1]) + '</div></div>';
     }).join("");
+
+  // ---------- club trajectory chart ----------
+  //
+  // Thirty series on one axis. The answer is NOT thirty colors: every club is
+  // drawn in one recessive gray and identity is carried by hover and by up to
+  // four pins, which take the validated categorical slots in fixed order. A
+  // pinned club keeps its color when the league filter changes, so filtering
+  // never repaints the survivors.
+  var SLOTS = ["--s1", "--s2", "--s3", "--s4"];
+  var STAT_LABEL = {dawg:"DAWG", dawg_plus:"DAWG+", wdawg:"wDAWG", wdawg_plus:"wDAWG+"};
+  var C = {stat:"dawg", mode:"value", lg:"ALL", pins:[], hot:null, sel:null};
+
+  var LEAGUE_OF = {};
+  (function(){
+    // history.js carries no league column, so it is read off the leaderboard
+    // payload when that is loaded alongside, and otherwise inferred from a
+    // static list. Filtering silently doing nothing is worse than no filter.
+    var AL = ["BAL","BOS","NYY","TB","TOR","CWS","CLE","DET","KC","MIN","ATH","HOU","LAA","SEA","TEX"];
+    AL.forEach(function(t){ LEAGUE_OF[t] = "AL"; });
+    H.teams.forEach(function(t){ if(!LEAGUE_OF[t.team]) LEAGUE_OF[t.team] = "NL"; });
+  })();
+
+  function statOf(t, y){
+    var s = t.seasons[y];
+    return (s && s[C.stat] !== null && s[C.stat] !== undefined) ? s[C.stat] : null;
+  }
+
+  // Rank within a season, 1 = best. Used only by the delta view.
+  function rankMap(y, get){
+    var rows = [];
+    H.teams.forEach(function(t){
+      var v = get(t, y);
+      if(v !== null && v !== undefined) rows.push({team:t.team, v:v});
+    });
+    rows.sort(function(a,b){ return b.v - a.v; });
+    var m = {};
+    rows.forEach(function(r,i){ m[r.team] = i + 1; });
+    return m;
+  }
+  var RANKS = {};
+  function ranksFor(y){
+    var k = C.stat + "|" + y;
+    if(!RANKS[k]){
+      RANKS[k] = {
+        stat: rankMap(y, statOf),
+        win:  rankMap(y, function(t,yy){ var s=t.seasons[yy]; return s ? s.win_pct : null; })
+      };
+    }
+    return RANKS[k];
+  }
+
+  // Positive = the club won BETTER than its DAWG rank said it should.
+  function deltaOf(t, y){
+    var r = ranksFor(y);
+    var a = r.stat[t.team], b = r.win[t.team];
+    return (a && b) ? (a - b) : null;
+  }
+
+  function valueOf(t, y){ return C.mode === "value" ? statOf(t, y) : deltaOf(t, y); }
+
+  var GEO = {w:1080, h:430, l:56, r:74, t:16, b:34};
+
+  function drawChart(){
+    var svg = document.getElementById("chart");
+    var pts = [], all = [];
+    H.teams.forEach(function(t){
+      YEARS.forEach(function(y){
+        var v = valueOf(t, y);
+        if(v !== null) all.push(v);
+      });
+    });
+    if(!all.length){ svg.innerHTML = ""; return; }
+
+    var lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+    if(C.mode === "delta"){
+      var m = Math.max(Math.abs(lo), Math.abs(hi), 1);
+      lo = -m; hi = m;                       // symmetric, so zero sits centered
+    }
+    var pad = (hi - lo) * 0.08 || 1;
+    lo -= pad; hi += pad;
+
+    var innerW = GEO.w - GEO.l - GEO.r, innerH = GEO.h - GEO.t - GEO.b;
+    function X(i){ return GEO.l + (YEARS.length === 1 ? innerW/2 : innerW * i/(YEARS.length-1)); }
+    function Y(v){ return GEO.t + innerH * (1 - (v - lo)/((hi - lo)||1)); }
+
+    var out = [];
+
+    // Grid first, so every mark sits on top of it.
+    var TICKS = 5;
+    for(var g=0; g<=TICKS; g++){
+      var v = lo + (hi-lo)*g/TICKS, yy = Y(v);
+      out.push('<line class="gridline" x1="'+GEO.l+'" y1="'+yy.toFixed(1)+
+               '" x2="'+(GEO.w-GEO.r)+'" y2="'+yy.toFixed(1)+'"/>');
+      out.push('<text class="axtext" x="'+(GEO.l-8)+'" y="'+(yy+4).toFixed(1)+
+               '" text-anchor="end">'+(C.mode==="delta" ? (v>0?"+":"")+v.toFixed(0) : v.toFixed(1))+'</text>');
+    }
+    if(C.mode === "delta"){
+      out.push('<line class="zeroline" x1="'+GEO.l+'" y1="'+Y(0).toFixed(1)+
+               '" x2="'+(GEO.w-GEO.r)+'" y2="'+Y(0).toFixed(1)+'"/>');
+    }
+    YEARS.forEach(function(y,i){
+      out.push('<text class="axtext" x="'+X(i).toFixed(1)+'" y="'+(GEO.h-12)+
+               '" text-anchor="middle">'+y+'</text>');
+    });
+
+    function visible(t){ return C.lg === "ALL" || LEAGUE_OF[t.team] === C.lg; }
+
+    // Split on gaps rather than bridging them: a club-season that did not
+    // qualify is a hole in the record, and a straight line across it would
+    // invent data.
+    function segments(t){
+      var segs = [], cur = [];
+      YEARS.forEach(function(y,i){
+        var v = valueOf(t, y);
+        if(v === null){ if(cur.length) segs.push(cur); cur = []; }
+        else cur.push([X(i), Y(v)]);
+      });
+      if(cur.length) segs.push(cur);
+      return segs;
+    }
+    function d(segs){
+      return segs.map(function(s){
+        return "M" + s.map(function(p){ return p[0].toFixed(1)+","+p[1].toFixed(1); }).join("L");
+      }).join(" ");
+    }
+
+    var shown = H.teams.filter(visible);
+    var hotList = [];
+    shown.forEach(function(t){
+      var segs = segments(t);
+      if(!segs.length) return;
+      var path = d(segs);
+      var pin = C.pins.indexOf(t.team);
+      var isHot = C.hot === t.team;
+      if(pin >= 0 || isHot){ hotList.push({t:t, segs:segs, path:path, pin:pin, hot:isHot}); return; }
+      out.push('<path class="tline'+(C.hot||C.pins.length ? " dim":"")+'" d="'+path+'"/>');
+    });
+
+    // Emphasized clubs last so they paint over the crowd.
+    hotList.forEach(function(o){
+      var col = o.pin >= 0 ? "var("+SLOTS[o.pin]+")" : "var(--ink)";
+      out.push('<path class="tline'+(o.hot?" hot":"")+'" d="'+o.path+
+               '" style="stroke:'+col+';stroke-width:'+(o.hot?3:2.5)+'"/>');
+      o.segs.forEach(function(s){
+        s.forEach(function(p){
+          out.push('<circle class="tdot" cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+
+                   '" r="4.5" style="fill:'+col+'"/>');
+        });
+      });
+      // Direct label at the line's end: identity is never color alone.
+      var last = o.segs[o.segs.length-1];
+      var end = last[last.length-1];
+      out.push('<text class="endlab" x="'+(end[0]+9).toFixed(1)+'" y="'+(end[1]+4).toFixed(1)+
+               '" style="fill:'+col+'">'+esc(o.t.team)+'</text>');
+    });
+
+    // Hit layer on top: a fat invisible stroke per club, plus a generous
+    // target on every point. The mark is 2px; nobody can hit 2px.
+    shown.forEach(function(t){
+      var segs = segments(t);
+      if(!segs.length) return;
+      out.push('<path class="thit" d="'+d(segs)+'" data-team="'+esc(t.team)+'"/>');
+      YEARS.forEach(function(y,i){
+        var v = valueOf(t, y);
+        if(v === null) return;
+        out.push('<circle class="thitdot" cx="'+X(i).toFixed(1)+'" cy="'+Y(v).toFixed(1)+
+                 '" r="9" data-team="'+esc(t.team)+'" data-year="'+y+'"/>');
+      });
+    });
+
+    svg.innerHTML = out.join("");
+    document.getElementById("chart-sub").textContent = C.mode === "value"
+      ? "Every club's " + STAT_LABEL[C.stat] + " by season. Hover a line to bring it forward, "
+        + "click to pin it in color, click a dot for that club-season in full. Up to four pins."
+      : STAT_LABEL[C.stat] + " rank minus actual win-percentage rank, within each season. "
+        + "Above the line the club won MORE than its " + STAT_LABEL[C.stat]
+        + " said it should; below, it won less.";
+  }
+
+  function drawPins(){
+    var el = document.getElementById("pins");
+    if(!C.pins.length){
+      el.innerHTML = '<span class="pinhint">No clubs pinned &mdash; click any line.</span>';
+      return;
+    }
+    el.innerHTML = C.pins.map(function(t,i){
+      return '<button class="pinchip" data-unpin="'+esc(t)+'">'+
+        '<i style="background:var('+SLOTS[i]+')"></i>'+esc(t)+' &times;</button>';
+    }).join("") + (C.pins.length >= SLOTS.length
+      ? '<span class="pinhint">Four is the limit &mdash; unpin one to add another.</span>' : "");
+  }
+
+  function drawSel(){
+    var card = document.getElementById("selcard");
+    if(!C.sel){ card.hidden = true; return; }
+    var t = H.teams.filter(function(x){ return x.team === C.sel.team; })[0];
+    var s = t && t.seasons[C.sel.year];
+    if(!s){ card.hidden = true; return; }
+    card.hidden = false;
+    var r = ranksFor(C.sel.year);
+    var dr = deltaOf(t, C.sel.year);
+    function cell(k,v){ return '<div><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
+    var wl = (s.wins===null||s.wins===undefined) ? "&mdash;" : s.wins+"&ndash;"+s.losses;
+    card.innerHTML =
+      cell(esc(C.sel.team)+" "+C.sel.year, esc(s.round_label || "Missed")) +
+      cell("DAWG", num(s.dawg,1)) + cell("DAWG+", num(s.dawg_plus,1)) +
+      cell("wDAWG", num(s.wdawg,1)) + cell("wDAWG+", num(s.wdawg_plus,1)) +
+      cell("Record", wl) + cell("Run diff", s.run_diff===null||s.run_diff===undefined ? "&mdash;" : (s.run_diff>0?"+":"")+s.run_diff) +
+      '<div class="full">' + (dr === null ? "" :
+        "Ranked " + r.stat[C.sel.team] + " of " + Object.keys(r.stat).length + " in " +
+        STAT_LABEL[C.stat] + ", " + r.win[C.sel.team] + " in win percentage &mdash; " +
+        (dr === 0 ? "exactly where its DAWG put it."
+                  : Math.abs(dr) + " place" + (Math.abs(dr)===1?"":"s") +
+                    (dr > 0 ? " better" : " worse") + " in the standings than its " +
+                    STAT_LABEL[C.stat] + " said.")) +
+      (s.ps_wins ? " Won " + s.ps_wins + " postseason game" + (s.ps_wins===1?"":"s") + "." : "") +
+      '</div>';
+  }
+
+  function redraw(){ drawChart(); drawPins(); drawSel(); }
+
+  var tip = document.getElementById("tip");
+  function showTip(team, year, evt){
+    var t = H.teams.filter(function(x){ return x.team === team; })[0];
+    var s = t && t.seasons[year];
+    if(!s){ tip.hidden = true; return; }
+    var wl = (s.wins===null||s.wins===undefined) ? "&mdash;" : s.wins+"&ndash;"+s.losses;
+    var rows = [["DAWG", num(s.dawg,1)], ["DAWG+", num(s.dawg_plus,1)],
+                ["wDAWG", num(s.wdawg,1)], ["wDAWG+", num(s.wdawg_plus,1)],
+                ["Record", wl], ["October", esc(s.round_label || "Missed")]];
+    tip.innerHTML = "<b>" + esc(team) + " " + year + "</b>" + rows.map(function(r){
+      return '<div class="r"><span>'+r[0]+'</span><span>'+r[1]+'</span></div>'; }).join("");
+    tip.hidden = false;
+    var box = document.getElementById("chartwrap").getBoundingClientRect();
+    var x = evt.clientX - box.left + 14, y = evt.clientY - box.top + 12;
+    if(x + 190 > box.width) x = evt.clientX - box.left - 190;
+    tip.style.left = Math.max(4, x) + "px";
+    tip.style.top = Math.max(4, y) + "px";
+  }
+
+  // Nearest season to the cursor, for hovering the line between two dots.
+  function yearAt(evt){
+    var svg = document.getElementById("chart");
+    var box = svg.getBoundingClientRect();
+    var px = (evt.clientX - box.left) / box.width * GEO.w;
+    var innerW = GEO.w - GEO.l - GEO.r;
+    var i = YEARS.length === 1 ? 0
+      : Math.round((px - GEO.l) / innerW * (YEARS.length - 1));
+    return YEARS[Math.max(0, Math.min(YEARS.length - 1, i))];
+  }
+
+  document.getElementById("chart").addEventListener("mousemove", function(e){
+    var hit = e.target.closest(".thit, .thitdot");
+    if(!hit){
+      if(C.hot){ C.hot = null; drawChart(); }
+      tip.hidden = true;
+      return;
+    }
+    var team = hit.getAttribute("data-team");
+    if(C.hot !== team){ C.hot = team; drawChart(); }
+    showTip(team, hit.getAttribute("data-year") || yearAt(e), e);
+  });
+  document.getElementById("chart").addEventListener("mouseleave", function(){
+    tip.hidden = true;
+    if(C.hot){ C.hot = null; drawChart(); }
+  });
+  document.getElementById("chart").addEventListener("click", function(e){
+    var hit = e.target.closest(".thit, .thitdot");
+    if(!hit) return;
+    var team = hit.getAttribute("data-team");
+    var year = hit.getAttribute("data-year");
+    if(year){ C.sel = {team:team, year:year}; }
+    var at = C.pins.indexOf(team);
+    if(at >= 0) C.pins.splice(at, 1);
+    else if(C.pins.length < SLOTS.length) C.pins.push(team);
+    redraw();
+  });
+  document.getElementById("pins").addEventListener("click", function(e){
+    var b = e.target.closest("[data-unpin]");
+    if(!b) return;
+    var at = C.pins.indexOf(b.getAttribute("data-unpin"));
+    if(at >= 0) C.pins.splice(at, 1);
+    redraw();
+  });
+  [["statseg","stat"],["modeseg","mode"],["lgseg","lg"]].forEach(function(pair){
+    document.getElementById(pair[0]).addEventListener("click", function(e){
+      var b = e.target.closest(".segbtn");
+      if(!b) return;
+      C[pair[1]] = b.getAttribute("data-" + (pair[1]==="lg" ? "lg" : pair[1]));
+      Array.prototype.forEach.call(this.querySelectorAll(".segbtn"), function(x){
+        x.classList.toggle("on", x === b); });
+      redraw();
+    });
+  });
+  redraw();
 
   // ---------- careers ----------
   var minsel = document.getElementById("minyrs");

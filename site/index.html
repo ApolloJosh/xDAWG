@@ -84,6 +84,12 @@ td.alt{color:var(--muted)}
 .twoway-btn{font:inherit;font-size:12px;cursor:pointer;background:none;
   border:2px solid var(--rule);padding:2px 8px;margin-left:6px;color:inherit}
 .twoway-btn.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.variant-pick{display:flex;gap:0;margin:10px 0 4px;flex-wrap:wrap}
+.vbtn{font:inherit;font-size:12px;cursor:pointer;background:#fff;color:var(--ink);
+  border:2px solid var(--rule);padding:4px 11px;text-transform:uppercase;letter-spacing:.04em}
+.vbtn+.vbtn{border-left-width:1px}
+.vbtn.on{background:var(--ink);color:#fff}
+.vbtn[disabled]{opacity:.4;cursor:not-allowed}
 .pod:hover{background:var(--accent)}
 .pod:focus-visible{outline:3px solid var(--primary);outline-offset:-3px}
 .pod-rank{
@@ -302,12 +308,19 @@ footer strong{color:var(--ink)}
   <p id="gen"></p>
 </footer>
 
-<script src="data/data.js?v=202608192057"></script>
+<script src="data/data.js?v=202608191648"></script>
 <script>
 (function(){
   "use strict";
   var D = window.XDAWG_DATA || {players:[],teams:[],season:"",synthetic:false};
-  var state = {league:"ALL", team:"ALL", role:"ALL", q:"", sort:"dawg_plus", dir:-1, open:null};
+  // `variant` picks which of the two scorings the open breakdown explains.
+  // "lg" is the league-baselined family (DAWG+/DAWG), "self" the
+  // self-referenced one (wDAWG+/wDAWG). The panel used to hardcode the
+  // league z on every component row while printing both totals at the
+  // bottom, so a player whose two numbers disagreed had no visible reason
+  // for it anywhere on the page.
+  var state = {league:"ALL", team:"ALL", role:"ALL", q:"", sort:"dawg_plus",
+               dir:-1, open:null, variant:"lg"};
 
   var $ = function(id){ return document.getElementById(id); };
   var fmt = function(v,d){ return (v===null||v===undefined||isNaN(v)) ? "—" : Number(v).toFixed(d===undefined?1:d); };
@@ -402,33 +415,59 @@ footer strong{color:var(--ink)}
 
   function detailRow(p){
     var order = D.pillars || ["BITE","GRIT","HUNT","FIGHT"];
+    var self = state.variant === "self";
+    // A payload built before components carried `z_w` has no self-referenced
+    // rows at all. Fall back rather than drawing an empty panel.
+    var hasSelf = order.some(function(n){
+      return ((p.pillars[n]||{}).components||[]).some(function(c){
+        return c.z_w !== null && c.z_w !== undefined; });
+    });
+    if (self && !hasSelf) self = false;
+    function zOf(o){ return self ? o.z_w : o.z; }
+
     var blocks = order.map(function(name){
       var pl = p.pillars[name] || {};
       var comps = (pl.components||[]).map(function(c){
+        var z = zOf(c);
         return '<div class="rowline"><span>'+esc(c.label)+'</span>'+
-               meter(c.z)+'<span class="zval">'+sgn(c.z)+'</span></div>';
+               meter(z)+'<span class="zval">'+sgn(z)+'</span></div>';
       }).join("");
       if (!comps) comps = '<div class="rowline"><span style="color:var(--muted)">No components available</span><span></span><span></span></div>';
       return '<div class="pillar">'+
         '<div class="pillar-top"><span class="pillar-name">'+name+'</span>'+
         '<span class="pillar-wt">'+Math.round((pl.weight||0)*100)+'% of score</span>'+
-        '<span class="pillar-z">'+sgn(pl.z)+'</span></div>'+
+        '<span class="pillar-z">'+sgn(zOf(pl))+'</span></div>'+
         '<div class="rowline head"><span>Component</span><span>Below / above avg</span><span class="zval">z</span></div>'+
         comps+'</div>';
     }).join("");
 
     return '<tr class="detail"><td colspan="11"><div class="detail-in">'+
       '<p class="detail-head">'+esc(p.name)+' &mdash; how it adds up</p>'+
-      '<p class="detail-note">Each bar is standard deviations from league average, after shrinking for sample size. '+
-      'The four pillars are weighted and combined, then rescaled so 100 is average.</p>'+
+      '<p class="detail-note">'+(self
+        ? 'Each bar is standard deviations from league average of how much this player '+
+          'BEAT HIS OWN baseline &mdash; the wDAWG+ scoring. Talent cancels out, so a '+
+          'great player who is merely his usual self when the moment gets big lands near zero.'
+        : 'Each bar is standard deviations from league average, after shrinking for sample size. '+
+          'The four pillars are weighted and combined, then rescaled so 100 is average.')+'</p>'+
+      '<div class="variant-pick" role="group" aria-label="Which scoring to explain">'+
+        '<button class="vbtn'+(self?"":" on")+'" data-variant="lg"'+
+          (self?"":' aria-current="true"')+'>vs. league &mdash; DAWG+</button>'+
+        '<button class="vbtn'+(self?" on":"")+'" data-variant="self"'+
+          (self?' aria-current="true"':"")+(hasSelf?"":' disabled title="This build predates per-component wDAWG+"')+
+          '>vs. his own norms &mdash; wDAWG+</button>'+
+      '</div>'+
       '<div class="legend"><span><span class="swatch pos"></span>Above average</span>'+
       '<span><span class="swatch neg"></span>Below average</span>'+
       '<span>Scale runs −3.0 to +3.0</span></div>'+
       '<div class="pillars">'+blocks+'</div>'+
-      '<div class="total"><span class="total-label">'+esc(p.name)+' DAWG+</span>'+
-      '<span class="total-val">'+fmt(p.dawg_plus)+'</span>'+
-      '<span class="total-label">wDAWG+ '+fmt(p.wdawg_plus)+
-        ' &middot; DAWG '+fmt(p.dawg,2)+' &middot; wDAWG '+fmt(p.wdawg,2)+'</span>'+
+      '<div class="total"><span class="total-label">'+esc(p.name)+
+        (self ? ' wDAWG+' : ' DAWG+')+'</span>'+
+      '<span class="total-val">'+fmt(self ? p.wdawg_plus : p.dawg_plus)+'</span>'+
+      '<span class="total-label">'+(self
+        ? 'DAWG+ '+fmt(p.dawg_plus)+' &middot; wDAWG '+fmt(p.wdawg,2)+
+          ' &middot; DAWG '+fmt(p.dawg,2)
+        : 'wDAWG+ '+fmt(p.wdawg_plus)+' &middot; DAWG '+fmt(p.dawg,2)+
+          ' &middot; wDAWG '+fmt(p.wdawg,2))+'</span>'+
       (function(){
         var egos = alterEgos(p);
         if (egos.length < 2) return "";
@@ -550,6 +589,12 @@ footer strong{color:var(--ink)}
   }
 
   document.addEventListener("click", function(e){
+    var v = e.target.closest(".vbtn");
+    if (v && !v.disabled){
+      state.variant = v.getAttribute("data-variant");
+      render();
+      return;
+    }
     var n = e.target.closest(".namebtn, .pod, .twoway-btn");
     if (!n) return;
     var id = n.getAttribute("data-id");
