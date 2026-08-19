@@ -71,6 +71,10 @@ header{border-bottom:4px solid var(--rule);background:#fff}
   border-left:0;border-right:0;border-top:0;width:100%;text-align:left;font:inherit;
 }
 td.alt{color:var(--muted)}
+.twoway{display:block;margin:6px 0 2px;font-size:12px;color:var(--muted)}
+.twoway-btn{font:inherit;font-size:12px;cursor:pointer;background:none;
+  border:2px solid var(--rule);padding:2px 8px;margin-left:6px;color:inherit}
+.twoway-btn.on{background:var(--primary);border-color:var(--primary);color:#fff}
 .pod:hover{background:var(--accent)}
 .pod:focus-visible{outline:3px solid var(--primary);outline-offset:-3px}
 .pod-rank{
@@ -408,19 +412,46 @@ footer strong{color:var(--ink)}
       '<span class="total-val">'+fmt(p.dawg_plus)+'</span>'+
       '<span class="total-label">wDAWG+ '+fmt(p.wdawg_plus)+
         ' &middot; DAWG '+fmt(p.dawg,2)+' &middot; wDAWG '+fmt(p.wdawg,2)+'</span>'+
+      (function(){
+        var egos = alterEgos(p);
+        if (egos.length < 2) return "";
+        // Two-way player: let the reader jump between his two scored halves
+        // rather than only ever seeing whichever ranked higher.
+        return '<span class="twoway">Two-way player: '+
+          egos.map(function(q){
+            var on = q.role === p.role;
+            return '<button class="twoway-btn'+(on?" on":"")+'" data-id="'+
+              keyOf(q)+'"'+(on?' aria-current="true"':'')+'>'+
+              (q.role==="hitter"?"Hitter":"Pitcher")+' '+fmt(q.dawg_plus)+
+              '</button>';
+          }).join("")+'</span>';
+      })()+
       '<span class="total-note">Rank '+p.rank+' of '+D.players.length+' qualified. '+
       esc(p.team)+' &middot; '+esc(p.pos)+' &middot; '+fmt(p.opportunities,0)+' opportunities.</span></div>'+
       '</div></td></tr>';
+  }
+
+  // A two-way player appears twice -- once as a hitter, once as a pitcher --
+  // and both rows carry the same MLBAM id. Keying the DOM on id alone made
+  // them collide, so clicking either opened whichever came first: Ohtani's
+  // pitcher card was reachable and his hitter card was not. Key on id+role.
+  function keyOf(p){ return p.id + "-" + p.role; }
+
+  // Every entry sharing this player's id, so the breakdown can offer a
+  // toggle between his two halves.
+  function alterEgos(p){
+    return D.players.filter(function(q){ return q.id === p.id; });
   }
 
   function render(){
     var list = sorted(filtered());
     var tb = $("rows"), html = "";
     list.forEach(function(p){
-      var open = state.open===p.id;
-      html += '<tr class="row'+(open?" open":"")+'" data-id="'+p.id+'">'+
+      var k = keyOf(p);
+      var open = state.open===k;
+      html += '<tr class="row'+(open?" open":"")+'" data-id="'+k+'">'+
         '<td class="left">'+p.rank+'</td>'+
-        '<td class="left"><button class="namebtn" data-id="'+p.id+'" aria-expanded="'+open+'">'+
+        '<td class="left"><button class="namebtn" data-id="'+k+'" aria-expanded="'+open+'">'+
           esc(p.name)+'</button><span class="tag '+(p.role==="hitter"?"h":"p")+'">'+
           (p.role==="hitter"?"HIT":"PIT")+'</span></td>'+
         '<td class="left hide2">'+esc(p.team)+'</td>'+
@@ -442,7 +473,7 @@ footer strong{color:var(--ink)}
   function renderPodium(){
     var top = D.players.slice(0,10);
     $("podium").innerHTML = top.map(function(p){
-      return '<button class="pod" data-id="'+p.id+'">'+
+      return '<button class="pod" data-id="'+keyOf(p)+'">'+
         '<span class="pod-rank">'+p.rank+'</span>'+
         '<span class="pod-main"><span class="pod-name">'+esc(p.name)+'</span>'+
         '<span class="pod-meta">'+esc(p.team)+' &middot; '+esc(p.pos)+' &middot; '+
@@ -502,9 +533,9 @@ footer strong{color:var(--ink)}
   }
 
   document.addEventListener("click", function(e){
-    var n = e.target.closest(".namebtn, .pod");
+    var n = e.target.closest(".namebtn, .pod, .twoway-btn");
     if (!n) return;
-    var id = Number(n.getAttribute("data-id"));
+    var id = n.getAttribute("data-id");
     if (n.classList.contains("pod")){
       // Clear filters so the featured player is guaranteed to be visible.
       state.league="ALL"; state.team="ALL"; state.role="ALL"; state.q="";
