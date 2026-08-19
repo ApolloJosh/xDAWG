@@ -93,11 +93,26 @@ def weighted_delta(
     compared against HIS OWN baseline, park effects, era, and raw ability
     cancel out algebraically -- what survives is only the change under
     pressure.
+
+    Returns BOTH baselines, because they are the same computation with a
+    different subtrahend and running the pipeline twice to get them would
+    double the expensive part for nothing:
+
+      delta         weighted mean minus THIS PLAYER'S flat mean. Talent
+                    cancels algebraically, so what survives is only the
+                    change under pressure. Feeds wDAWG+.
+      league_delta  weighted mean minus the LEAGUE's flat mean. Talent does
+                    not cancel, so this blends "how good" with "when".
+                    Feeds DAWG+.
+
+    The two differ by exactly the player's own level above league average,
+    which is the quantity xDAWG was originally built to throw away.
     """
     d = df[[group, value, weight]].dropna()
     if d.empty:
-        return pd.DataFrame(columns=[group, "delta", "n"])
+        return pd.DataFrame(columns=[group, "delta", "league_delta", "n"])
 
+    league_flat = float(d[value].mean())
     d["_wv"] = d[value] * d[weight]
     g = d.groupby(group).agg(
         _sum_wv=("_wv", "sum"),
@@ -106,8 +121,10 @@ def weighted_delta(
         n=(value, "size"),
     )
     g = g[g["n"] >= min_n]
-    g["delta"] = (g["_sum_wv"] / g["_sum_w"]) - g["flat"]
-    return g.reset_index()[[group, "delta", "n"]]
+    weighted = g["_sum_wv"] / g["_sum_w"]
+    g["delta"] = weighted - g["flat"]
+    g["league_delta"] = weighted - league_flat
+    return g.reset_index()[[group, "delta", "league_delta", "n"]]
 
 
 def clutch(
@@ -160,10 +177,15 @@ def clutch(
         return pd.DataFrame(columns=[group, "wpa_clutch_delta",
                                      "wpa_clutch_delta__n"])
 
-    g["wpa_clutch_delta"] = (
-        (g["_wpa"] / g["_pli"].where(g["_pli"] > 0)) - g["_neutral"]
-    ) / g["n"]
-    g["wpa_clutch_delta"] = g["wpa_clutch_delta"].fillna(0.0)
+    leveraged = (g["_wpa"] / g["_pli"].where(g["_pli"] > 0)) / g["n"]
+    g["wpa_clutch_delta"] = (leveraged - g["_neutral"] / g["n"]).fillna(0.0)
+    # League-relative variant: the same leverage-normalized production, but
+    # measured against what an average hitter produces per plate appearance
+    # instead of against the player's own context-neutral rate. Talent stays
+    # in, which is the whole point of the DAWG+ family.
+    league_neutral = float(d["_neutral"].mean())
+    g["wpa_clutch_delta__lg"] = (leveraged - league_neutral).fillna(0.0)
     return g.reset_index().rename(columns={"n": "wpa_clutch_delta__n"})[
-        [group, "wpa_clutch_delta", "wpa_clutch_delta__n"]
+        [group, "wpa_clutch_delta", "wpa_clutch_delta__lg",
+         "wpa_clutch_delta__n"]
     ]

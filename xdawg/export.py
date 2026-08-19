@@ -63,6 +63,7 @@ def build_payload(
     pitchers: pd.DataFrame,
     season: int = SEASON_DEFAULT,
     synthetic: bool = False,
+    standings: pd.DataFrame | None = None,
 ) -> dict:
     players = []
     for role, df in (("hitter", hitters), ("pitcher", pitchers)):
@@ -77,6 +78,7 @@ def build_payload(
                 key = p.lower()
                 breakdown[p] = {
                     "z": _clean(r.get(p)),
+                    "z_w": _clean(r.get(f"{p}_w")),
                     "weight": PILLAR_WEIGHTS[role][key],
                     # Zero-weight components are omitted: they are kept in
                     # config to document the intended shape of a pillar, but
@@ -96,13 +98,18 @@ def build_payload(
                 "division": div,
                 "role": role,
                 "pos": str(r.get("pos", "")),
-                "xdawg": _clean(r.get("xDAWG")),
+                # Four numbers now. DAWG+/DAWG compare to the LEAGUE, so
+                # talent stays in; wDAWG+/wDAWG compare each player to his
+                # own norms, so only change-under-pressure survives.
+                "dawg_plus": _clean(r.get("DAWG+")),
                 "dawg": _clean(r.get("DAWG")),
+                "wdawg_plus": _clean(r.get("wDAWG+")),
+                "wdawg": _clean(r.get("wDAWG")),
                 "opportunities": _clean(r.get("opportunities")),
                 "pillars": breakdown,
             })
 
-    players.sort(key=lambda p: (p["xdawg"] is None, -(p["xdawg"] or 0)))
+    players.sort(key=lambda p: (p["dawg_plus"] is None, -(p["dawg_plus"] or 0)))
     for i, p in enumerate(players, 1):
         p["rank"] = i
 
@@ -113,7 +120,68 @@ def build_payload(
         "pillars": list(PILLARS),
         "teams": sorted(TEAMS),
         "players": players,
+        "team_table": build_teams(players, standings),
     }
+
+
+def build_teams(players: list[dict], standings: pd.DataFrame | None) -> list[dict]:
+    """Team totals, for comparing the DAWG stats against actual records.
+
+    The headline is the SUM of each club's cumulative scores, so depth and
+    playing time count -- a team of eight good regulars should outrank one
+    with three stars and five passengers. The roster's mean rate sits beside
+    it, because the sum alone rewards simply having more qualified players.
+
+    Records come from StatsAPI. Note FIGHT uses Pythagorean expectation from
+    runs rather than actual W-L, so wins here are genuinely independent of
+    anything that fed the player scores -- which is what makes the comparison
+    worth looking at rather than circular.
+    """
+    rec = {}
+    if standings is not None and not standings.empty:
+        for _, r in standings.iterrows():
+            rec[str(r.get("team", ""))] = {
+                "wins": _clean(r.get("wins")),
+                "losses": _clean(r.get("losses")),
+                "rs": _clean(r.get("rs")),
+                "ra": _clean(r.get("ra")),
+            }
+
+    by_team: dict[str, list[dict]] = {}
+    for p in players:
+        if p.get("team"):
+            by_team.setdefault(p["team"], []).append(p)
+
+    rows = []
+    for team, roster in by_team.items():
+        def total(key):
+            vals = [p[key] for p in roster if p.get(key) is not None]
+            return round(sum(vals), 2) if vals else None
+
+        def mean(key):
+            vals = [p[key] for p in roster if p.get(key) is not None]
+            return round(sum(vals) / len(vals), 1) if vals else None
+
+        r = rec.get(team, {})
+        w, l = r.get("wins"), r.get("losses")
+        lg, div = TEAMS.get(team, ("", ""))
+        rows.append({
+            "team": team, "league": lg, "division": div,
+            "players": len(roster),
+            "hitters": sum(1 for p in roster if p["role"] == "hitter"),
+            "pitchers": sum(1 for p in roster if p["role"] == "pitcher"),
+            "dawg": total("dawg"), "dawg_plus": mean("dawg_plus"),
+            "wdawg": total("wdawg"), "wdawg_plus": mean("wdawg_plus"),
+            "wins": w, "losses": l,
+            "win_pct": round(w / (w + l), 3) if w is not None and l and (w + l) else None,
+            "run_diff": (round(r["rs"] - r["ra"]) if r.get("rs") is not None
+                         and r.get("ra") is not None else None),
+        })
+
+    rows.sort(key=lambda x: (x["dawg"] is None, -(x["dawg"] or 0)))
+    for i, x in enumerate(rows, 1):
+        x["rank"] = i
+    return rows
 
 
 def write_site_data(payload: dict, site_dir: str | Path) -> Path:

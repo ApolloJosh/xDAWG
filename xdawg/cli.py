@@ -91,9 +91,10 @@ def main(argv: list[str] | None = None) -> int:
             season=a.season, start=str(start), end=str(end), min_pa=15, min_bf=15
         )
         for label, df in (("HITTERS", hit), ("PITCHERS", pit)):
-            print(f"\n  {label} - {len(df)} scored")
+            print(f"\n  {label} - {len(df)} scored   (DAWG+ / wDAWG+)")
             for _, r in df.head(5).iterrows():
-                print(f"    {r['name']:<24} {str(r['team']):<4} {r['xDAWG']:6.1f}")
+                print(f"    {r['name']:<24} {str(r['team']):<4} "
+                      f"{r['DAWG+']:6.1f} {r['wDAWG+']:6.1f}")
         print("\n[xdawg] ingestion path works. Now run: python -m xdawg build")
         return 0
 
@@ -101,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     from .pipeline import run
 
     hit, pit = run(season=a.season, refresh=a.refresh)
-    payload = build_payload(hit, pit, season=a.season, synthetic=False)
+    from .ingest import load_standings
+    payload = build_payload(hit, pit, season=a.season, synthetic=False,
+                            standings=load_standings(a.season))
     out = write_site_data(payload, a.site)
     print(f"[xdawg] wrote {out} ({len(payload['players'])} players)")
     print("[xdawg] open site/index.html, or run: python -m xdawg serve")

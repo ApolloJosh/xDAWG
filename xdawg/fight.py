@@ -91,11 +91,16 @@ def fight_delta(
     ~80 a season, but divisional and quality-opponent PA number 300-400 --
     four to five times the sample, close enough to stabilization that run
     value carries real signal.
+
+    Returns both baselines, exactly as `leverage.weighted_delta` does:
+    `delta` against the player's own flat mean, `league_delta` against the
+    league's.
     """
     d = events[[group, value, weight_col]].dropna()
     if d.empty:
-        return pd.DataFrame(columns=[group, "delta", "n"])
+        return pd.DataFrame(columns=[group, "delta", "league_delta", "n"])
 
+    league_flat = float(d[value].mean())
     d["_wv"] = d[value] * d[weight_col]
     g = d.groupby(group).agg(
         _sum_wv=("_wv", "sum"),
@@ -104,5 +109,7 @@ def fight_delta(
         n=(value, "size"),
     )
     g = g[g["n"] >= min_n]
-    g["delta"] = (g["_sum_wv"] / g["_sum_w"]) - g["flat"]
-    return g.reset_index()[[group, "delta", "n"]]
+    weighted = g["_sum_wv"] / g["_sum_w"]
+    g["delta"] = weighted - g["flat"]
+    g["league_delta"] = weighted - league_flat
+    return g.reset_index()[[group, "delta", "league_delta", "n"]]

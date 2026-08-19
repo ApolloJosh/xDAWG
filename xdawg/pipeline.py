@@ -16,7 +16,7 @@ import pandas as pd
 
 from . import fight as fight_mod
 from . import ingest
-from .aggregate import compute
+from .aggregate import compute, league_view as aggregate_league_view
 from .config import QUALIFY, SEASON_DEFAULT, TEAMS
 from .leverage import add_leverage
 from .pillars import hitters as H
@@ -117,13 +117,16 @@ def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
     for wcol, name in (("w_contender", "contender_rv_delta"),
                        ("w_division", "division_rv_delta")):
         part = fight_mod.fight_delta(pa, who, "rv", wcol, min_n=60)
-        part = part.rename(columns={"delta": name, "n": f"{name}__n"})
+        part = part.rename(columns={
+            "delta": name, "league_delta": f"{name}__lg", "n": f"{name}__n"})
         out = part if out is None else out.merge(part, on=who, how="outer")
 
     if not swings.empty:
         proc = fight_mod.fight_delta(swings, who, "_proc", "w_contender", min_n=80)
-        proc = proc.rename(columns={"delta": "fight_process_delta",
-                                    "n": "fight_process_delta__n"})
+        proc = proc.rename(columns={
+            "delta": "fight_process_delta",
+            "league_delta": "fight_process_delta__lg",
+            "n": "fight_process_delta__n"})
         out = out.merge(proc, on=who, how="outer")
     return out if out is not None else pd.DataFrame(columns=[who])
 
@@ -301,4 +304,34 @@ def run(
     pit["pos"] = ""
 
     print(f"[xdawg] scoring {len(hit)} hitters, {len(pit)} pitchers")
-    return compute(hit, "hitter"), compute(pit, "pitcher")
+    return _score_both(hit, "hitter"), _score_both(pit, "pitcher")
+
+
+# Pillar z-scores differ between the two variants, so each needs its own
+# breakdown for the site. The self-referenced set is suffixed to keep both.
+_PILLAR_COLS = ("BITE", "GRIT", "HUNT", "FIGHT")
+
+
+def _score_both(df: pd.DataFrame, role: str) -> pd.DataFrame:
+    """Score a role twice: league-baselined and self-referenced.
+
+    DAWG+  / DAWG   compare each player to the LEAGUE. Talent stays in, so
+                    this reads closer to a conventional leaderboard.
+    wDAWG+ / wDAWG  compare each player to HIS OWN norms. Talent cancels
+                    algebraically and only change-under-pressure survives --
+                    the original xDAWG construction.
+
+    Both come from one pass over the data: every delta component already
+    carries its league-baselined twin, so this is two cheap rescorings of
+    frames that are already built, not two trips to Savant.
+    """
+    league = compute(aggregate_league_view(df, role), role,
+                     rate_name="DAWG+", count_name="DAWG")
+    selfref = compute(df, role, rate_name="wDAWG+", count_name="wDAWG")
+
+    keep = ["player_id", "wDAWG+", "wDAWG"] + [f"{c}_w" for c in _PILLAR_COLS]
+    selfref = selfref.rename(columns={c: f"{c}_w" for c in _PILLAR_COLS})
+    selfref = selfref[[c for c in keep if c in selfref.columns]]
+
+    out = league.merge(selfref, on="player_id", how="left")
+    return out.sort_values("DAWG+", ascending=False).reset_index(drop=True)

@@ -349,6 +349,13 @@ def _standings_from_statsapi(season: int) -> pd.DataFrame:
                 "team": abbr.get(tid, ""),
                 "rs": float(tr.get("runsScored") or 0),
                 "ra": float(tr.get("runsAllowed") or 0),
+                # Actual record, for the team leaderboard. FIGHT deliberately
+                # uses Pythagorean expectation from rs/ra rather than these,
+                # because real W-L carries bullpen luck and one-run-game noise
+                # -- but the whole point of the team board is comparing the
+                # DAWG stats against what actually happened.
+                "wins": float(tr.get("wins") or 0),
+                "losses": float(tr.get("losses") or 0),
             })
 
     df = pd.DataFrame(rows)
@@ -392,6 +399,11 @@ def load_standings(season: int, refresh: bool = False) -> pd.DataFrame | None:
         tp = team_pitching(season)[["Team", "R"]].rename(columns={"R": "ra"})
         df = tb.merge(tp, on="Team").rename(columns={"Team": "team"})
         df["team"] = df["team"].map(normalize_team)
+        # The FanGraphs fallback carries no record, so the team board simply
+        # shows no W-L rather than the column vanishing.
+        for col in ("wins", "losses"):
+            if col not in df.columns:
+                df[col] = float("nan")
         df.to_parquet(path, index=False)
         return df
     except Exception as e:  # noqa: BLE001

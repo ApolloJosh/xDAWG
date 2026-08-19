@@ -72,8 +72,35 @@ def score_pillar(
     return zscore(total), pd.DataFrame(detail)
 
 
-def compute(df: pd.DataFrame, role: str) -> pd.DataFrame:
-    """Full pipeline: components -> pillars -> xDAWG+ and DAWG.
+LEAGUE_SUFFIX = "__lg"
+
+
+def league_view(df: pd.DataFrame, role: str) -> pd.DataFrame:
+    """Swap in the league-baselined version of every component that has one.
+
+    Components come in two flavours. A leverage delta is computed against
+    the player's OWN flat mean, and its `<name>__lg` twin against the
+    league's -- those get swapped here. Everything measured on absolute
+    level already (hustle, availability, OAA) has no separate league
+    version, because z-scoring across players is itself a comparison to the
+    league; those pass through untouched and read the same in both stats.
+    """
+    out = df.copy()
+    for comps in COMPONENTS[role].values():
+        for name in comps:
+            lg = f"{name}{LEAGUE_SUFFIX}"
+            if lg in out.columns:
+                out[name] = out[lg]
+    return out
+
+
+def compute(
+    df: pd.DataFrame,
+    role: str,
+    rate_name: str = "DAWG+",
+    count_name: str = "DAWG",
+) -> pd.DataFrame:
+    """Full pipeline: components -> pillars -> a rate stat and a counting stat.
 
     `df` is one row per player with raw component columns (and optional
     `<component>__n` opportunity counts). Returns the scored frame.
@@ -96,14 +123,14 @@ def compute(df: pd.DataFrame, role: str) -> pd.DataFrame:
     z_total = zscore(z_total)
 
     out["z_total"] = z_total
-    out["xDAWG"] = 100.0 + SCALE * z_total
+    out[rate_name] = 100.0 + SCALE * z_total
 
     # Counting version. Zero is LEAGUE AVERAGE here, not replacement level --
-    # so a negative DAWG means actively not-a-dawg, which is both useful
+    # so a negative score means actively not-a-dawg, which is both useful
     # and funny.
     opp = pd.to_numeric(out.get("opportunities", pd.Series(1.0, index=out.index)),
                         errors="coerce").fillna(0.0)
     mean_opp = opp[opp > 0].mean()
-    out["DAWG"] = z_total * (opp / mean_opp if mean_opp else 1.0)
+    out[count_name] = z_total * (opp / mean_opp if mean_opp else 1.0)
 
-    return out.sort_values("xDAWG", ascending=False).reset_index(drop=True)
+    return out.sort_values(rate_name, ascending=False).reset_index(drop=True)
