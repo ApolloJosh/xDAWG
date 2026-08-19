@@ -55,7 +55,8 @@ def bite(p: pd.DataFrame) -> pd.DataFrame:
 
     def merge(frame, col):
         nonlocal out
-        frame = frame.rename(columns={"delta": col, "n": f"{col}__n"})
+        frame = frame.rename(columns={
+            "delta": col, "league_delta": f"{col}__lg", "n": f"{col}__n"})
         out = frame if out is None else out.merge(frame, on=g, how="outer")
 
     # Does the put-away pitch keep its shape?
@@ -125,8 +126,10 @@ def post_hr_bounceback(p: pd.DataFrame) -> pd.DataFrame:
     # Run value is from the batting team's view, so lower is better for the
     # pitcher -- negate so higher is always more dawg.
     g["post_hr_bounceback"] = -(g["rv"] - g["pitcher"].map(base))
+    g["post_hr_bounceback__lg"] = -(g["rv"] - float(pa["rv"].mean()))
     return g.rename(columns={"n": "post_hr_bounceback__n"})[
-        ["pitcher", "post_hr_bounceback", "post_hr_bounceback__n"]
+        ["pitcher", "post_hr_bounceback", "post_hr_bounceback__lg",
+         "post_hr_bounceback__n"]
     ]
 
 
@@ -147,8 +150,9 @@ def grit(p: pd.DataFrame) -> pd.DataFrame:
     )
     out = late.reset_index()
     out["stuff_after_75"] = out["stuff"] - out["pitcher"].map(early)
+    out["stuff_after_75__lg"] = out["stuff"] - float(early.mean())
     out = out.rename(columns={"n": "stuff_after_75__n"})[
-        ["pitcher", "stuff_after_75", "stuff_after_75__n"]
+        ["pitcher", "stuff_after_75", "stuff_after_75__lg", "stuff_after_75__n"]
     ]
 
     # Third time through the order -- holding up once they've seen him twice.
@@ -161,9 +165,11 @@ def grit(p: pd.DataFrame) -> pd.DataFrame:
     if not t3.empty:
         t3 = t3.reset_index()
         t3["third_time_through"] = -(t3["rv"] - t3["pitcher"].map(base))
+        t3["third_time_through__lg"] = -(t3["rv"] - float(pa["rv"].mean()))
         out = out.merge(
             t3.rename(columns={"n": "third_time_through__n"})[
-                ["pitcher", "third_time_through", "third_time_through__n"]
+                ["pitcher", "third_time_through", "third_time_through__lg",
+                 "third_time_through__n"]
             ], on="pitcher", how="outer")
 
     # Workload willingness -- multi-inning outings and short rest.
@@ -224,7 +230,8 @@ def hunt(p: pd.DataFrame) -> pd.DataFrame:
 
     def merge(frame, col):
         nonlocal out
-        frame = frame.rename(columns={"delta": col, "n": f"{col}__n"})
+        frame = frame.rename(columns={
+            "delta": col, "league_delta": f"{col}__lg", "n": f"{col}__n"})
         out = frame if out is None else out.merge(frame, on=g, how="outer")
 
     risp = d[d[["on_2b", "on_3b"]].notna().any(axis=1)]

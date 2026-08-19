@@ -51,7 +51,8 @@ def bite(p: pd.DataFrame) -> pd.DataFrame:
 
     def merge(frame, col, nkey):
         nonlocal out
-        frame = frame.rename(columns={"delta": col, "n": f"{col}__n"})
+        frame = frame.rename(columns={
+            "delta": col, "league_delta": f"{col}__lg", "n": f"{col}__n"})
         out = frame if out is None else out.merge(frame, on=g, how="outer")
 
     # Whiff rate under leverage vs. own baseline (inverted in config).
@@ -123,8 +124,11 @@ def post_k_bounceback(p: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
     g["rv"] = (g["_sum_wv"] / g["_sum_w"].where(g["_sum_w"] > 0)).fillna(0.0)
     g["post_k_bounceback"] = g["rv"] - g["batter"].map(base)
+    # League baseline instead of his own, for the DAWG+ variant.
+    g["post_k_bounceback__lg"] = g["rv"] - float(pa["rv"].mean())
     return g.rename(columns={"n": "post_k_bounceback__n"})[
-        ["batter", "post_k_bounceback", "post_k_bounceback__n"]
+        ["batter", "post_k_bounceback", "post_k_bounceback__lg",
+         "post_k_bounceback__n"]
     ]
 
 
