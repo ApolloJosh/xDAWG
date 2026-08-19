@@ -44,28 +44,33 @@ COMPONENTS = {
         "bite": {
             # The extended at-bat, not the disciplined one. Whiff is primary;
             # chasing and surviving it is a POSITIVE.
-            "whiff_delta":        {"weight": 0.30, "invert": True,  "k": 150},
+            "whiff_delta":        {"weight": 0.45, "invert": True,  "k": 150},
             # chase_contact correlates 0.738 with whiff_delta on real data --
             # both are whiff-avoidance under leverage -- so at 0.22 the two
             # of them held 52% of BITE between them. Weight moved to the
             # terms that measure something else: grinding the count and
             # refusing to be put away.
-            "chase_contact":      {"weight": 0.12, "invert": False, "k": 100},
-            "pitches_per_pa_delta": {"weight": 0.25, "invert": False, "k": 90},
-            "two_strike_foul_delta": {"weight": 0.20, "invert": False, "k": 120},
+            "chase_contact":      {"weight": 0.15, "invert": False, "k": 100},
             # Continuous exit velocity, not a binary >=95mph flag: no cliff
             # at 94.9, and it uses the whole distribution. Replaces
             # hard_hit_delta rather than joining it -- two measures of the
             # same thing splitting weight is how whiff_delta and
             # chase_contact ended up correlated at 0.738.
-            "ev_situational":     {"weight": 0.10, "invert": False, "k": 200},
-            "post_k_bounceback":  {"weight": 0.05, "invert": False, "k": 80},
+            "ev_situational":     {"weight": 0.28, "invert": False, "k": 200},
+            "post_k_bounceback":  {"weight": 0.12, "invert": False, "k": 80},
         },
+        # Grinding out an at-bat is effort, not approach, so the two terms
+        # that measure refusing to give one away live here rather than in
+        # BITE. It also stops any single measurement dominating: hustle alone
+        # used to be 35% of GRIT and, when GRIT was a one-component pillar,
+        # 30% of a hitter's entire score.
         "grit": {
-            "hustle_ratio":       {"weight": 0.35, "invert": False, "k": 60},
-            "hbp_above_expected": {"weight": 0.25, "invert": False, "k": 400},
-            "extra_bases_taken":  {"weight": 0.22, "invert": False, "k": 50},
-            "availability":       {"weight": 0.18, "invert": False, "k": 30},
+            "hustle_ratio":       {"weight": 0.22, "invert": False, "k": 60},
+            "pitches_per_pa_delta": {"weight": 0.20, "invert": False, "k": 90},
+            "hbp_above_expected": {"weight": 0.16, "invert": False, "k": 400},
+            "two_strike_foul_delta": {"weight": 0.15, "invert": False, "k": 120},
+            "extra_bases_taken":  {"weight": 0.15, "invert": False, "k": 50},
+            "availability":       {"weight": 0.12, "invert": False, "k": 30},
         },
         # HUNT is built on OAA, which Savant publishes only as a season total
         # per fielder -- there are no per-play rows to attach leverage to.
@@ -104,9 +109,14 @@ COMPONENTS = {
             "assists_blocks_lev": {"weight": 0.00, "invert": False, "k": 30},
             "baserunning_lev":    {"weight": 0.00, "invert": False, "k": 50},
         },
+        # Two separate readings rather than one blended weight: beating the
+        # best team in the league and beating the club you see nineteen times
+        # are different kinds of dawg, and blending them made the breakdown
+        # panel unreadable.
         "fight": {
-            "fight_rv_delta":     {"weight": 0.70, "invert": False, "k": 250},
-            "fight_process_delta": {"weight": 0.30, "invert": False, "k": 180},
+            "contender_rv_delta": {"weight": 0.40, "invert": False, "k": 250},
+            "division_rv_delta":  {"weight": 0.35, "invert": False, "k": 250},
+            "fight_process_delta": {"weight": 0.25, "invert": False, "k": 180},
         },
     },
     "pitcher": {
@@ -129,8 +139,9 @@ COMPONENTS = {
             "jam_escape_process": {"weight": 0.25, "invert": False, "k": 100},
         },
         "fight": {
-            "fight_rv_delta":     {"weight": 0.70, "invert": False, "k": 300},
-            "fight_process_delta": {"weight": 0.30, "invert": False, "k": 220},
+            "contender_rv_delta": {"weight": 0.40, "invert": False, "k": 300},
+            "division_rv_delta":  {"weight": 0.35, "invert": False, "k": 300},
+            "fight_process_delta": {"weight": 0.25, "invert": False, "k": 220},
         },
     },
 }
@@ -189,7 +200,19 @@ LEVERAGE = {
 # ---------------------------------------------------------------------------
 
 SCALE = 25.0
-QUALIFY = {"hitter_min_pa": 250, "pitcher_min_bf": 150}
+QUALIFY = {
+    # Loosened from 250/150. At 250 PA only 271 hitters qualified against 383
+    # pitchers -- roughly a third of position players in the league, so
+    # part-timers and platoon bats were missing from the board entirely.
+    #
+    # Letting them in is safe because shrinkage already does this job
+    # properly: a component's z is scaled by n/(n+k), so a player with 160 PA
+    # is regressed hard toward average rather than spiking on a small sample.
+    # A hard cutoff on top of that was doing the same work twice, and doing
+    # it more bluntly.
+    "hitter_min_pa": 150,
+    "pitcher_min_bf": 100,
+}
 
 # Teams -> (league, division). Used for the DIV term and the site's filters.
 TEAMS = {

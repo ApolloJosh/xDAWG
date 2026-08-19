@@ -31,12 +31,16 @@ def opponent_quality(standings: pd.DataFrame) -> pd.Series:
     return pd.Series(q.values, index=standings["team"].values, name="Q")
 
 
+ALL_TERMS = ("quality", "division", "late")
+
+
 def fight_weight(
     opp_team: pd.Series,
     player_team: pd.Series,
     season_pct: pd.Series,
     quality: pd.Series,
     stakes: pd.Series | None = None,
+    terms: tuple[str, ...] = ALL_TERMS,
 ) -> pd.Series:
     """Multiplicative FIGHT weight per event.
 
@@ -44,6 +48,13 @@ def fight_weight(
 
     Q is deliberately NOT clamped at zero, so facing a bad team scores below
     a neutral game rather than merely failing to add credit.
+
+    `terms` selects which multiplicands apply. Blending opponent quality and
+    divisional rivalry into one number made them impossible to read apart on
+    the site -- beating the best team in the league and beating the team you
+    play nineteen times are different kinds of dawg, so FIGHT now computes a
+    delta under each weighting separately. The late-season ramp rides along
+    with both, because September matters to each of them equally.
     """
     q = opp_team.map(quality).fillna(0.0)
 
@@ -56,11 +67,13 @@ def fight_weight(
     if stakes is None:
         stakes = pd.Series(1.0, index=opp_team.index)
 
-    w = (
-        (1.0 + FIGHT["opponent_quality_coef"] * q)
-        * (1.0 + FIGHT["division_coef"] * is_div.astype(float))
-        * (1.0 + FIGHT["late_stakes_coef"] * late * stakes.fillna(0.0))
-    )
+    w = pd.Series(1.0, index=opp_team.index)
+    if "quality" in terms:
+        w = w * (1.0 + FIGHT["opponent_quality_coef"] * q)
+    if "division" in terms:
+        w = w * (1.0 + FIGHT["division_coef"] * is_div.astype(float))
+    if "late" in terms:
+        w = w * (1.0 + FIGHT["late_stakes_coef"] * late * stakes.fillna(0.0))
     return w.clip(lower=FIGHT["min_weight"])
 
 

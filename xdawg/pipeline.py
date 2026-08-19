@@ -41,8 +41,15 @@ def _team_of(p: pd.DataFrame, who: str) -> pd.Series:
         team = np.where(batting_home, p["home_team"], p["away_team"])
     else:
         team = np.where(batting_home, p["away_team"], p["home_team"])
-    tmp = pd.DataFrame({who: p[who], "team": team}).dropna()
-    return tmp.groupby(who)["team"].agg(lambda s: s.value_counts().idxmax())
+    tmp = pd.DataFrame({
+        who: p[who], "team": team, "_d": pd.to_datetime(p["game_date"], errors="coerce")
+    }).dropna(subset=[who, "team"])
+    # Most RECENT club, not the most frequent one. A player traded in July
+    # still has more games with his old team, so "most frequent" left him
+    # listed there for the rest of the season -- which reads as stale data
+    # even though the scoring is correct.
+    tmp = tmp.sort_values("_d")
+    return tmp.groupby(who)["team"].last()
 
 
 def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
@@ -69,12 +76,18 @@ def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
     span = (dates.max() - dates.min()).days or 1
     d["_pct"] = (dates - dates.min()).dt.days / span
 
-    d["fight_w"] = fight_mod.fight_weight(
-        pd.Series(d["_opp"].values, index=d.index),
-        pd.Series(d["_own"].values, index=d.index),
-        d["_pct"],
-        quality,
-    )
+    def weight_for(terms):
+        return fight_mod.fight_weight(
+            pd.Series(d["_opp"].values, index=d.index),
+            pd.Series(d["_own"].values, index=d.index),
+            d["_pct"], quality, terms=terms,
+        )
+
+    # Two independent readings of "showed up when it mattered", rather than
+    # one blended number nobody can decompose on the site.
+    d["w_contender"] = weight_for(("quality", "late"))
+    d["w_division"] = weight_for(("division", "late"))
+    d["fight_w"] = weight_for(fight_mod.ALL_TERMS)
 
     # Process alongside outcome. `fight_rv_delta` is run value, which FIGHT
     # is allowed to use because divisional and quality-opponent samples are
@@ -94,19 +107,25 @@ def _attach_fight(p: pd.DataFrame, who: str, season: int) -> pd.DataFrame:
     swings = d[d["is_swing"]]
 
     pa = d.groupby([who, "game_pk", "at_bat_number"]).agg(
-        rv=("delta_run_exp", "sum"), fight_w=("fight_w", "first")
+        rv=("delta_run_exp", "sum"),
+        w_contender=("w_contender", "first"),
+        w_division=("w_division", "first"),
     ).reset_index()
     pa["rv"] = pa["rv"] * sign
 
-    out = fight_mod.fight_delta(pa, who, "rv", "fight_w", min_n=60)
-    out = out.rename(columns={"delta": "fight_rv_delta", "n": "fight_rv_delta__n"})
+    out = None
+    for wcol, name in (("w_contender", "contender_rv_delta"),
+                       ("w_division", "division_rv_delta")):
+        part = fight_mod.fight_delta(pa, who, "rv", wcol, min_n=60)
+        part = part.rename(columns={"delta": name, "n": f"{name}__n"})
+        out = part if out is None else out.merge(part, on=who, how="outer")
 
     if not swings.empty:
-        proc = fight_mod.fight_delta(swings, who, "_proc", "fight_w", min_n=80)
+        proc = fight_mod.fight_delta(swings, who, "_proc", "w_contender", min_n=80)
         proc = proc.rename(columns={"delta": "fight_process_delta",
                                     "n": "fight_process_delta__n"})
         out = out.merge(proc, on=who, how="outer")
-    return out
+    return out if out is not None else pd.DataFrame(columns=[who])
 
 
 def _fielding_context(p: pd.DataFrame, season: int) -> pd.DataFrame:
