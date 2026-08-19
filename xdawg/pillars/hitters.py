@@ -460,31 +460,40 @@ def xbt_frame(p: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["batter", "extra_bases_taken",
                                      "extra_bases_taken__n"])
 
+    # Everything below works in plain numpy. Statcast hands back `on_1b` and
+    # friends as nullable Int64/Float64 carrying pd.NA, and comparing two of
+    # those produces a nullable BooleanArray -- which np.where cannot consume
+    # ("boolean value of NA is ambiguous"). Base state is null on most pitches
+    # by definition, so this is the common path, not an edge case.
+    def as_float(s: pd.Series) -> np.ndarray:
+        return pd.to_numeric(s, errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan)
+
     # Where every runner stands at the start of the NEXT plate appearance.
-    nxt = {}
-    for base in (1, 2, 3):
-        nxt[base] = pa.groupby("game_pk")[f"on_{base}b"].shift(-1)
+    nxt = {
+        base: as_float(pa.groupby("game_pk")[f"on_{base}b"].shift(-1))
+        for base in (1, 2, 3)
+    }
 
     ev = pa["events"].astype(str).str.lower()
-    keep = ev.isin(_XBT_EVENTS)
+    keep = ev.isin(_XBT_EVENTS).fillna(False).to_numpy(dtype=bool)
 
     rows = []
     for base in (1, 2):  # a runner on third has no extra base to take
-        rid = pd.to_numeric(pa[f"on_{base}b"], errors="coerce")
-        sel = keep & rid.notna()
+        rid = as_float(pa[f"on_{base}b"])
+        sel = keep & ~np.isnan(rid)
         if not sel.any():
             continue
-        after = pd.DataFrame({b: pd.to_numeric(nxt[b], errors="coerce")
-                              for b in (1, 2, 3)})
         # Which base is he standing on next time we look? None => scored.
         ended = np.full(len(pa), 4.0)
         for b in (1, 2, 3):
-            ended = np.where((after[b] == rid).to_numpy(), float(b), ended)
+            same = (nxt[b] == rid) & ~np.isnan(rid)
+            ended = np.where(same, float(b), ended)
         rows.append(pd.DataFrame({
             "batter": rid[sel].astype("int64"),
             "start": base,
-            "event": ev[sel],
-            "advance": np.clip(ended[sel.to_numpy()] - base, 0, 3),
+            "event": ev.to_numpy()[sel],
+            "advance": np.clip(ended[sel] - base, 0, 3),
         }))
 
     if not rows:

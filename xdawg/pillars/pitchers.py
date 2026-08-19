@@ -65,7 +65,15 @@ def bite(p: pd.DataFrame) -> pd.DataFrame:
     # Attacking vs. nibbling: zone rate with runners on minus bases empty.
     # One of the stickiest pitcher traits there is, and the most dawg-coded.
     d["_runners_on"] = d[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1)
-    d["_in_zone"] = (~d["out_of_zone"]).astype(float)
+    # out_of_zone inherits pd.NA from a nullable `zone`, so this is a
+    # nullable boolean. pandas 3 converts NA to nan on .astype(float);
+    # pandas 2 is not guaranteed to, and the container, the dev Mac and
+    # the CI runner do not all run the same major version. Convert
+    # explicitly so the behaviour is the same everywhere: a pitch whose
+    # zone we do not know stays null and drops out of the mean rather
+    # than silently counting as "not in the zone".
+    d["_in_zone"] = (~d["out_of_zone"]).astype("Float64").to_numpy(
+        dtype="float64", na_value=np.nan)
     z = d.groupby([g, "_runners_on"])["_in_zone"].agg(["mean", "size"]).reset_index()
     piv = z.pivot(index=g, columns="_runners_on", values="mean")
     cnt = z.pivot(index=g, columns="_runners_on", values="size")
@@ -227,7 +235,8 @@ def hunt(p: pd.DataFrame) -> pd.DataFrame:
     merge(weighted_delta(ts, g, "_putaway", min_n=50), "putaway_lev")
 
     runners = d[d[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1)].copy()
-    runners["_chase_induced"] = runners["is_chase"].astype(float)
+    runners["_chase_induced"] = runners["is_chase"].astype("Float64").to_numpy(
+        dtype="float64", na_value=np.nan)
     merge(weighted_delta(runners, g, "_chase_induced", min_n=60), "jam_escape_process")
 
     return out if out is not None else pd.DataFrame(columns=[g])
