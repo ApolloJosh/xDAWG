@@ -131,21 +131,25 @@ def main() -> int:
         print()
 
     # --- Soft check: the scale is where it should be --------------------
-    xs = [p["xdawg"] for p in players if p.get("xdawg") is not None]
-    if xs:
+    print("### Scale")
+    print()
+    for key, label in (("dawg_plus", "DAWG+ "), ("wdawg_plus", "wDAWG+")):
+        xs = [p[key] for p in players if p.get(key) is not None]
+        if not xs:
+            failures.append(f"{label.strip()} missing from every player")
+            continue
         mean, sd = statistics.fmean(xs), statistics.pstdev(xs)
-        print("### Scale")
-        print()
-        print(f"    xDAWG mean {mean:.1f} (target 100), sd {sd:.1f} (target ~25)")
-        print(f"    range      {min(xs):.1f} to {max(xs):.1f}")
-        print()
+        print(f"    {label} mean {mean:5.1f} (target 100), sd {sd:5.1f} "
+              f"(target ~25), range {min(xs):.1f} to {max(xs):.1f}")
         if abs(mean - 100) > 3:
-            warnings.append(f"xDAWG mean is {mean:.1f}, not ~100")
+            warnings.append(f"{label.strip()} mean is {mean:.1f}, not ~100")
         if not 15 <= sd <= 40:
-            warnings.append(f"xDAWG sd is {sd:.1f}, well off the ~25 target")
+            warnings.append(f"{label.strip()} sd is {sd:.1f}, off the ~25 target")
+    print()
 
     # --- For the human: face validity ------------------------------------
-    print("### Top 25 -- eyeball this for face validity")
+    print("### Top 25 by DAWG+ -- eyeball this for face validity")
+    print("    (columns: DAWG+ then wDAWG+)")
     print()
     print("    The design goal is grinders high and several inner-circle")
     print("    superstars near 100. A top 25 that reads like a WAR")
@@ -156,7 +160,7 @@ def main() -> int:
         print(
             f"    {p.get('rank', 0):>3}. {p.get('name', '?'):<26}"
             f"{p.get('team', ''):<5}{p.get('role', ''):<9}"
-            f"{p.get('xdawg') or 0:6.1f}"
+            f"{p.get('dawg_plus') or 0:7.1f}{p.get('wdawg_plus') or 0:8.1f}"
         )
     print()
 

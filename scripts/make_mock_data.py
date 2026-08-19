@@ -111,7 +111,7 @@ def main() -> None:
     print(f"wrote {out}  ({len(payload['players'])} players)")
     top = payload["players"][:5]
     for p in top:
-        print(f"  {p['rank']:>2}. {p['name']:<24} {p['team']:<4} {p['xdawg']:.1f}")
+        print(f"  {p['rank']:>2}. {p['name']:<24} {p['team']:<4} {p['dawg_plus']:.1f}")
 
 
 if __name__ == "__main__":
