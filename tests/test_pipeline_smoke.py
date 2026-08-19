@@ -114,21 +114,45 @@ def _synthetic_statcast() -> pd.DataFrame:
     for pos in range(2, 10):
         df[f"fielder_{pos}"] = RNG.integers(600_000, 600_000 + N_BATTERS, n)
 
-    # Statcast really does hand back nullable extension dtypes. Reproduce
-    # that, because `.astype(float)` on one containing pd.NA is precisely
-    # the failure this test exists to catch.
-    df["stand"] = df["stand"].astype("string")
-    df["p_throws"] = df["p_throws"].astype("string")
-    df["events"] = df["events"].astype("string")
-    df["pitch_type"] = df["pitch_type"].astype("string")
-    df["zone"] = df["zone"].astype("Float64")
-    df["plate_x"] = df["plate_x"].astype("Float64")
-    df["plate_z"] = df["plate_z"].astype("Float64")
-    df["launch_speed"] = df["launch_speed"].astype("Float64")
-    df["launch_angle"] = df["launch_angle"].astype("Float64")
-    df["release_speed"] = df["release_speed"].astype("Float64")
-    df["release_spin_rate"] = df["release_spin_rate"].astype("Float64")
-    df["hit_location"] = df["hit_location"].astype("Float64")
+    return _make_nullable(df)
+
+
+# Every column that can carry a null in the real feed. Statcast hands these
+# back as pandas extension dtypes holding pd.NA rather than NaN, and pd.NA
+# behaves differently in ways that only surface at runtime:
+#
+#   * `.astype(float)` on one raises "float() argument must be ... not NAType"
+#   * comparing two of them yields a nullable BooleanArray, and passing that
+#     to np.where raises "boolean value of NA is ambiguous"
+#
+# Both have already reached CI and killed a build. Converting the whole set
+# here rather than column-by-column is deliberate: the first version of this
+# fixture converted only the columns of the bug being chased at the time, so
+# the very next nullable column to be touched -- `on_1b` -- escaped again.
+_STRING_COLS = ("stand", "p_throws", "events", "pitch_type", "description",
+                "type", "inning_topbot", "home_team", "away_team")
+_FLOAT_COLS = ("zone", "plate_x", "plate_z", "launch_speed", "launch_angle",
+               "release_speed", "release_spin_rate", "pfx_x", "pfx_z",
+               "release_extension", "delta_home_win_exp", "delta_run_exp",
+               "hit_location", "on_1b", "on_2b", "on_3b")
+_INT_COLS = ("balls", "strikes", "inning", "outs_when_up", "bat_score",
+             "fld_score", "pitch_number")
+
+
+def _make_nullable(df: pd.DataFrame) -> pd.DataFrame:
+    for col in _STRING_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype("string")
+    for col in _FLOAT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype("Float64")
+    for col in _INT_COLS:
+        if col in df.columns:
+            df[col] = df[col].astype("Int64")
+    for pos in range(2, 10):
+        col = f"fielder_{pos}"
+        if col in df.columns:
+            df[col] = df[col].astype("Float64")
     return df
 
 
