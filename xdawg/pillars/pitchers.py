@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..config import STUFF_WEIGHTS
 from ..leverage import weighted_delta
 from .hitters import tag_pitch_events
 
@@ -28,10 +29,16 @@ def stuff_proxy(p: pd.DataFrame) -> pd.DataFrame:
     )
     d["_velo"] = pd.to_numeric(d.get("release_speed"), errors="coerce")
     d["_ext"] = pd.to_numeric(d.get("release_extension"), errors="coerce")
+    # Spin was pulled from Statcast from the start but never actually used.
+    # Losing spin on the put-away pitch is one of the clearest tells that a
+    # pitcher is running out of gas, so it belongs in the proxy.
+    d["_spin"] = pd.to_numeric(d.get("release_spin_rate"), errors="coerce")
 
     keys = ["pitcher", "pitch_type"]
     parts = []
-    for col, w in (("_velo", 0.45), ("_move", 0.40), ("_ext", 0.15)):
+    for col, w in STUFF_WEIGHTS.items():
+        if col not in d.columns:
+            continue
         grp = d.groupby(keys)[col]
         mu, sd = grp.transform("mean"), grp.transform("std")
         parts.append(((d[col] - mu) / sd.replace(0, np.nan)).fillna(0.0) * w)

@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .. import ingest
-from ..leverage import weighted_delta
+from ..leverage import clutch, weighted_delta
 
 # Fallback opportunity count when no source publishes one. Roughly a
 # regular's season of chances, so shrinkage stays in a sane range instead of
@@ -82,8 +82,13 @@ def bite(p: pd.DataFrame) -> pd.DataFrame:
     ts = d[d["two_strike"] & d["is_swing"]]
     merge(weighted_delta(ts, g, "is_foul", min_n=30), "two_strike_foul_delta", "n")
 
-    bip = d[d["launch_speed"].notna()]
-    merge(weighted_delta(bip, g, "hard_hit", min_n=40), "hard_hit_delta", "n")
+    # Exit velocity under pressure, continuous rather than a >=95mph flag.
+    # Squaring one up and lining out is still a good process outcome, which
+    # is the whole reason this belongs in BITE alongside the whiff terms.
+    bip = d[d["launch_speed"].notna()].copy()
+    bip["_ev"] = pd.to_numeric(bip["launch_speed"], errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan)
+    merge(weighted_delta(bip, g, "_ev", min_n=40), "ev_situational", "n")
 
     return out if out is not None else pd.DataFrame(columns=[g])
 
@@ -497,3 +502,27 @@ def xbt_frame(p: pd.DataFrame) -> pd.DataFrame:
         extra_bases_taken=("excess", "mean"), n=("excess", "size")
     ).reset_index()
     return g.rename(columns={"n": "extra_bases_taken__n"})
+
+
+def clutch_frame(p: pd.DataFrame) -> pd.DataFrame:
+    """Per-hitter Clutch, from win expectancy already in the pitch feed.
+
+    `delta_home_win_exp` is signed from the HOME team's point of view, so it
+    is flipped for a batter hitting in the top half -- otherwise every road
+    hitter would score as the mirror image of his real contribution.
+    """
+    need = {"batter", "game_pk", "at_bat_number", "delta_home_win_exp",
+            "inning_topbot", "li"}
+    if not need.issubset(p.columns):
+        return pd.DataFrame(columns=["batter", "wpa_clutch_delta",
+                                     "wpa_clutch_delta__n"])
+
+    batting_home = p["inning_topbot"].astype(str).str.startswith("Bot")
+    d = p.copy()
+    d["_wpa"] = pd.to_numeric(d["delta_home_win_exp"], errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan) * np.where(batting_home, 1.0, -1.0)
+
+    pa = d.groupby(["batter", "game_pk", "at_bat_number"]).agg(
+        wpa=("_wpa", "sum"), li=("li", "first")
+    ).reset_index()
+    return clutch(pa, "batter", "wpa", "li", min_n=100)
