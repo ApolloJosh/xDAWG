@@ -146,9 +146,9 @@ def test_scale_is_centered_on_100():
     df["opportunities"] = 500.0
     out = compute(df, role)
 
-    assert abs(out["xDAWG"].mean() - 100) < 1.0
-    assert abs(out["xDAWG"].std(ddof=0) - SCALE) < 1.5
-    assert out["xDAWG"].is_monotonic_decreasing, "output must be sorted"
+    assert abs(out["DAWG+"].mean() - 100) < 1.0
+    assert abs(out["DAWG+"].std(ddof=0) - SCALE) < 1.5
+    assert out["DAWG+"].is_monotonic_decreasing, "output must be sorted"
 
 
 def test_fight_weight_ordering():

@@ -267,8 +267,17 @@ def test_full_pipeline_runs_on_nullable_statcast(offline):
     assert not hitters.empty, "no hitters scored"
     assert not pitchers.empty, "no pitchers scored"
     for frame, label in ((hitters, "hitters"), (pitchers, "pitchers")):
-        assert "xDAWG" in frame.columns, f"{label} missing xDAWG"
-        assert frame["xDAWG"].notna().any(), f"{label} xDAWG all null"
+        # All four stats: the league-baselined pair and the self-referenced
+        # pair. They come from one pass, so a missing one means the league
+        # variant of some component quietly failed to thread through.
+        for col in ("DAWG+", "DAWG", "wDAWG+", "wDAWG"):
+            assert col in frame.columns, f"{label} missing {col}"
+            assert frame[col].notna().any(), f"{label} {col} all null"
+        # If these two were identical the league baseline changed nothing.
+        assert not np.allclose(frame["DAWG+"], frame["wDAWG+"]), (
+            f"{label}: DAWG+ and wDAWG+ are identical -- the league "
+            "baseline is not being applied"
+        )
 
 
 def test_payload_builds_and_pillars_are_alive(offline):
@@ -280,6 +289,9 @@ def test_payload_builds_and_pillars_are_alive(offline):
     payload = build_payload(hitters, pitchers, season=2026, synthetic=False)
 
     assert payload["players"], "payload has no players"
+    assert payload.get("team_table"), "no team table in the payload"
+    for row in payload["team_table"]:
+        assert row.get("dawg") is not None, f"{row['team']} has no cumulative total"
     for role in ("hitter", "pitcher"):
         rows = [p for p in payload["players"] if p["role"] == role]
         assert rows, f"no {role}s in payload"
