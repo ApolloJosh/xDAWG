@@ -58,7 +58,12 @@ header{border-bottom:4px solid var(--rule);background:#fff}
   text-transform:uppercase;margin:30px 0 4px;line-height:1;
 }
 .section-sub{font-size:13px;color:var(--muted);margin:0 0 16px}
-.podium{display:grid;grid-template-columns:repeat(2,1fr);gap:0 26px;
+/* Column-major: 1-5 fill the left column top to bottom, 6-10 the right.
+   grid-auto-flow:column with a fixed row count does this in CSS, so the
+   DOM stays in rank order and remains correct for screen readers and for
+   the single-column mobile layout below. */
+.podium{display:grid;grid-template-rows:repeat(5,auto);grid-auto-flow:column;
+  grid-auto-columns:1fr;gap:0 26px;
   border-top:3px solid var(--rule);border-bottom:3px solid var(--rule)}
 .pod{
   display:flex;align-items:center;gap:12px;padding:11px 4px;
@@ -166,7 +171,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:18px 0 40px;
 footer strong{color:var(--ink)}
 
 @media (max-width:860px){
-  .podium{grid-template-columns:1fr;gap:0}
+  .podium{grid-template-rows:none;grid-auto-flow:row;grid-template-columns:1fr;gap:0}
   .pillars{grid-template-columns:1fr}
   .logo{font-size:40px}
   .season{margin-left:0}
