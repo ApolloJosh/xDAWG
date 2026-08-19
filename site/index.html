@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- index.html must not be cached. It is the file that carries the ?v= stamp
+     pointing at the current data.js, so a stale copy of THIS file pins the
+     browser to an old payload and the page silently shows last build's
+     numbers. data.js itself stays cacheable precisely because of that stamp. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>xDAWG</title>
 <style>
 /* ---------------------------------------------------------------
@@ -58,6 +65,8 @@ header{border-bottom:4px solid var(--rule);background:#fff}
   text-transform:uppercase;margin:30px 0 4px;line-height:1;
 }
 .section-sub{font-size:13px;color:var(--muted);margin:0 0 16px}
+.built{grid-column:2;justify-self:end;font-size:11px;color:var(--muted);
+  letter-spacing:.04em;text-transform:uppercase;margin-top:4px}
 /* Column-major: 1-5 fill the left column top to bottom, 6-10 the right.
    grid-auto-flow:column with a fixed row count does this in CSS, so the
    DOM stays in rank order and remains correct for screen readers and for
@@ -198,6 +207,7 @@ footer strong{color:var(--ink)}
     <div class="logo">x<span>DAWG</span></div>
     <div class="tagline">Who shows up when it matters. Not a talent metric &mdash; a measure of what a player does when the moment gets bigger.</div>
     <div class="season" id="season">2026</div>
+    <div class="built" id="built"></div>
   </div>
 </header>
 <div class="notice" id="notice" hidden><div class="wrap" id="notice-text"></div></div>
@@ -306,7 +316,13 @@ footer strong{color:var(--ink)}
 
   $("season").textContent = D.season;
   $("tdyear").textContent = D.season;
-  if (D.generated) $("gen").textContent = "Generated " + D.generated + ".";
+  if (D.generated){
+    $("gen").textContent = "Generated " + D.generated + ".";
+    // Also in the masthead. Four separate "the stats are broken" reports
+    // turned out to be a browser serving a previous build, so the build
+    // time belongs somewhere you cannot miss it rather than in the footer.
+    $("built").textContent = "Data " + D.generated;
+  }
 
   // Schema guard. A stale data.js renders as a table full of em-dashes with
   // an empty team section, which reads like "the stats broke" when in fact
