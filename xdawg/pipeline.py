@@ -286,6 +286,7 @@ def run(
         P.bite(p),
         P.post_hr_bounceback(p),
         P.grit(p),
+        P.workhorse(p),
         P.inherited_runners(p),
         P.hunt(p),
         _attach_fight(p, "pitcher", season),

@@ -442,6 +442,109 @@ def load_standings(season: int, refresh: bool = False) -> pd.DataFrame | None:
     return None
 
 
+# How far a club got, as an ordinal. StatsAPI's game type codes are the
+# authoritative round labels, so the mapping is read off them rather than
+# guessed from dates -- the bracket has been reshaped three times in a decade
+# and every reshape moved the dates around.
+POSTSEASON_ROUNDS = {"F": 1, "D": 2, "L": 3, "W": 4}
+POSTSEASON_LABELS = {
+    0: "Missed", 1: "Wild Card", 2: "Division Series",
+    3: "Championship Series", 4: "World Series", 5: "Champion",
+}
+
+
+def _postseason_from_statsapi(season: int) -> pd.DataFrame:
+    import requests
+
+    teams = requests.get(
+        "https://statsapi.mlb.com/api/v1/teams",
+        params={"sportId": 1, "season": season},
+        timeout=60,
+    )
+    teams.raise_for_status()
+    abbr = {
+        t["id"]: normalize_team(t.get("abbreviation", ""))
+        for t in teams.json().get("teams", [])
+    }
+
+    sched = requests.get(
+        "https://statsapi.mlb.com/api/v1/schedule",
+        params={
+            "sportId": 1,
+            "season": season,
+            "gameType": ",".join(POSTSEASON_ROUNDS),
+        },
+        timeout=60,
+    )
+    sched.raise_for_status()
+
+    rows: dict[str, dict] = {}
+    final_game = None
+    for day in sched.json().get("dates", []):
+        for game in day.get("games", []):
+            gtype = game.get("gameType", "")
+            rnd = POSTSEASON_ROUNDS.get(gtype, 0)
+            if not rnd:
+                continue
+            if game.get("status", {}).get("abstractGameState") != "Final":
+                continue
+            for side in ("home", "away"):
+                info = game.get("teams", {}).get(side, {})
+                team = abbr.get(info.get("team", {}).get("id"), "")
+                if not team:
+                    continue
+                row = rows.setdefault(
+                    team, {"team": team, "ps_games": 0, "ps_wins": 0, "round": 0}
+                )
+                row["ps_games"] += 1
+                row["ps_wins"] += int(bool(info.get("isWinner")))
+                row["round"] = max(row["round"], rnd)
+                if rnd == 4 and bool(info.get("isWinner")):
+                    final_game = max(final_game or 0, game.get("gamePk", 0))
+
+    if not rows:
+        raise ValueError(f"StatsAPI returned no completed postseason games for {season}")
+
+    # The champion is whoever won the last World Series game played, which is
+    # the only reliable read: a sweep and a seven-game series end on different
+    # dates and neither is flagged as clinching anywhere in the feed.
+    champ = ""
+    for day in sched.json().get("dates", []):
+        for game in day.get("games", []):
+            if game.get("gamePk") == final_game:
+                for side in ("home", "away"):
+                    info = game["teams"][side]
+                    if info.get("isWinner"):
+                        champ = abbr.get(info["team"]["id"], "")
+
+    df = pd.DataFrame(rows.values())
+    df.loc[df["team"] == champ, "round"] = 5
+    df["round_label"] = df["round"].map(POSTSEASON_LABELS)
+    return df.sort_values("round", ascending=False).reset_index(drop=True)
+
+
+def load_postseason(season: int, refresh: bool = False) -> pd.DataFrame | None:
+    """How far each club got in October, for the team history view.
+
+    Returns None rather than raising for a season with no postseason on
+    record yet -- an in-progress year is the normal case for the current
+    season, not an error.
+    """
+    name = f"postseason_{season}"
+    if not refresh:
+        cached = _read_cache(name, ("team", "round", "ps_wins"))
+        if cached is not None:
+            return cached
+    try:
+        df = _postseason_from_statsapi(season)
+    except Exception as e:  # noqa: BLE001
+        warnings.warn(f"postseason results unavailable for {season}: {e}")
+        return None
+    df.to_parquet(_cache_path(name), index=False)
+    print(f"[xdawg] postseason {season}: {len(df)} clubs played in October")
+    return df
+
+
 def player_names(pitches: pd.DataFrame) -> dict[int, str]:
     """Statcast's `player_name` is the PITCHER, so batters need a lookup."""
     names: dict[int, str] = {}

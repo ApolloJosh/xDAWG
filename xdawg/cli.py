@@ -27,6 +27,18 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--season", type=int, default=SEASON_DEFAULT)
     s.add_argument("--days", type=int, default=10)
 
+    h = sub.add_parser(
+        "history",
+        help="score several seasons and write the year-over-year view",
+    )
+    h.add_argument(
+        "--seasons", type=int, nargs="+", default=None,
+        help="seasons to score, e.g. --seasons 2023 2024 2025 2026. "
+             "Each one is a full Savant pull the first time it is run.",
+    )
+    h.add_argument("--refresh", action="store_true", help="ignore the local cache")
+    h.add_argument("--site", default=str(SITE))
+
     pr = sub.add_parser(
         "probe",
         help="report the real column names of every optional leaderboard",
@@ -61,6 +73,21 @@ def main(argv: list[str] | None = None) -> int:
                 httpd.serve_forever()
             except KeyboardInterrupt:
                 pass
+        return 0
+
+    if a.cmd == "history":
+        from .history import (
+            DEFAULT_WINDOW, build_history, summarize, write_history,
+        )
+
+        seasons = a.seasons or DEFAULT_WINDOW
+        print(f"[xdawg] history for {seasons}")
+        print("[xdawg] each uncached season is a full Savant pull; budget")
+        print("[xdawg] roughly 40 minutes apiece on a cold cache\n")
+        payload = build_history(seasons, refresh=a.refresh)
+        print(summarize(payload))
+        out = write_history(payload, a.site)
+        print(f"\n[xdawg] wrote {out}")
         return 0
 
     if a.cmd == "probe":

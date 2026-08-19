@@ -97,6 +97,7 @@ Same four pillars, different instruments. Note on "stuff": FanGraphs' Stuff+ isn
 
 - **Stuff retention after pitch 75** — velocity and movement in pitches 76+ measured against his own pitches 1–25. *(your idea, and it's the cleanest possible operationalization of "he's still got it in the 7th.")*
 - **Third-time-through-the-order performance** — holding up when the lineup has seen him twice.
+- **Starts of 5+ innings** and **knocked out early** (failed to record nine outs, inverted) — the innings eater who saves a bullpen, and the starter who does not. These exist because everything above them is *conditioned on surviving*: stuff-after-75 only exists for a pitcher who threw a 76th pitch, third-time-through only for one who faced the order again. A starter who keeps getting blown out early contributed to neither, so he was graded only on the nights he lasted and his disasters appeared nowhere in the metric. That is a selection bias large enough to invert a pitcher's score, and it is exactly what the eye test caught.
 - **Inherited runners** — relievers cleaning up someone else's mess. Dirty work nobody gets credit for.
 - **Workload willingness** — days rest, back-to-back appearances, multi-inning relief outings.
 - **Pitching inside** — willingness to work the inner half against same-handed hitters and wear the consequences.
@@ -105,7 +106,8 @@ Same four pillars, different instruments. Note on "stuff": FanGraphs' Stuff+ isn
 
 - **Stuff with RISP and in high leverage** — same delta structure, aimed at the moment.
 - **Put-away rate** in two-strike counts, leverage-weighted.
-- **Escaping self-created jams** — but measured through process (chase rate, ground-ball rate with runners on), because raw strand rate is one of the noisiest stats in baseball.
+- **Escaping self-created jams, process** — chase rate with runners on, immune to what the defense did behind him.
+- **Escaping self-created jams, damage** — run value from the first jam of an inning through the end of that inning, against the run expectancy of the state he was in. Process alone was the original design, on the argument that strand rate is too noisy to grade. That argument is right about *strand rate* and wrong as a reason to ignore outcomes: a run-expectancy-relative measure is far steadier than LOB%, and without it a pitcher who blows up every time he gets in trouble still graded out fine on the strength of his swing-and-miss. Charged through the end of the half inning even if he is pulled — the runners were his. The reliever is separately credited under **inherited runners**, so it is one event on two ledgers, not double counting.
 
 **FIGHT** *(weight 20%)*
 

@@ -26,6 +26,20 @@ MIN_PLAYERS = 100
 MIN_PILLAR_SPREAD = 1e-6      # a pillar with no spread is a dead pillar
 LOW_COVERAGE = 0.50           # component present for under half the players
 
+# Components that are SUPPOSED to cover only part of a role, so low coverage
+# on them is the design working rather than a leaderboard we failed to reach.
+# Starters are roughly a third of qualified pitchers and relievers are the
+# rest, so each of these three tops out near that by construction; warning on
+# them trains the eye to ignore the coverage section, which is the one place
+# a genuinely missing Savant source shows up.
+PARTIAL_BY_DESIGN = {
+    "pitcher/long_start_rate",   # starters only
+    "pitcher/blowup_rate",       # starters only
+    "pitcher/inherited_runners",  # relievers only
+    "pitcher/stuff_after_75",    # only pitchers who threw a 76th pitch
+    "pitcher/third_time_through",  # only pitchers who faced the order thrice
+}
+
 
 def load(path: Path) -> dict:
     """data.js is a script assignment, not JSON. Unwrap it."""
@@ -124,8 +138,10 @@ def main() -> int:
             print("      none present")
         for key, n in sorted(seen.items(), key=lambda kv: kv[1]):
             cov = n / len(rows)
-            mark = "  <-- low" if cov < LOW_COVERAGE else ""
-            if cov < LOW_COVERAGE:
+            expected = key in PARTIAL_BY_DESIGN
+            low = cov < LOW_COVERAGE and not expected
+            mark = "  <-- low" if low else ("  (partial by design)" if expected else "")
+            if low:
                 warnings.append(f"{role} {key}: present for only {cov:.0%} of players")
             print(f"      {key:<34} {cov:5.0%}{mark}")
         print()

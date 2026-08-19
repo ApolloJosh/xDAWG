@@ -126,17 +126,36 @@ COMPONENTS = {
             "bb_delta_lev":       {"weight": 0.22, "invert": True,  "k": 120},
             "post_hr_bounceback": {"weight": 0.18, "invert": False, "k": 40},
         },
+        # Every durability term here except the two workhorse rates is
+        # CONDITIONED ON SURVIVING: `stuff_after_75` only exists for a
+        # pitcher who threw a 76th pitch, `third_time_through` only for one
+        # who faced the order three times. A starter who keeps getting
+        # knocked out early is therefore graded only on the nights he
+        # lasted, and his disasters never appear anywhere. `long_start_rate`
+        # and `blowup_rate` are defined over ALL of his starts, which is
+        # what closes that hole -- so they take weight from the two
+        # survivorship terms rather than being bolted on beside them.
         "grit": {
-            "stuff_after_75":     {"weight": 0.30, "invert": False, "k": 300},
-            "third_time_through": {"weight": 0.22, "invert": False, "k": 150},
-            "inherited_runners":  {"weight": 0.20, "invert": False, "k": 35},
-            "workload":           {"weight": 0.16, "invert": False, "k": 25},
-            "pitching_inside":    {"weight": 0.12, "invert": False, "k": 250},
+            "stuff_after_75":     {"weight": 0.20, "invert": False, "k": 300},
+            "third_time_through": {"weight": 0.15, "invert": False, "k": 150},
+            "long_start_rate":    {"weight": 0.18, "invert": False, "k": 8},
+            "blowup_rate":        {"weight": 0.15, "invert": True,  "k": 8},
+            "inherited_runners":  {"weight": 0.14, "invert": False, "k": 35},
+            "workload":           {"weight": 0.09, "invert": False, "k": 25},
+            "pitching_inside":    {"weight": 0.09, "invert": False, "k": 250},
         },
+        # Escaping jams now carries 45% of HUNT between its process and
+        # outcome readings, up from 25% for process alone. k on the outcome
+        # term is in JAMS, not pitches -- a starter sees somewhere around
+        # forty a season, so k=25 means a full year is trusted at roughly
+        # 60% and a half season at 45%. Noisier than the process terms by
+        # construction, which is exactly why it is shrunk harder relative to
+        # its own sample size.
         "hunt": {
-            "risp_stuff_delta":   {"weight": 0.40, "invert": False, "k": 180},
-            "putaway_lev":        {"weight": 0.35, "invert": False, "k": 120},
-            "jam_escape_process": {"weight": 0.25, "invert": False, "k": 100},
+            "risp_stuff_delta":   {"weight": 0.25, "invert": False, "k": 180},
+            "putaway_lev":        {"weight": 0.30, "invert": False, "k": 120},
+            "jam_escape_runs":    {"weight": 0.30, "invert": False, "k": 25},
+            "jam_escape_process": {"weight": 0.15, "invert": False, "k": 100},
         },
         "fight": {
             "contender_rv_delta": {"weight": 0.40, "invert": False, "k": 300},

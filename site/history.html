@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Same reasoning as index.html: this file carries the ?v= stamp pointing at
+     history.js, so a cached copy of THIS pins the browser to an old payload. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>xDAWG &mdash; History</title>
+<style>
+@font-face{font-family:'Gobold';src:url('assets/fonts/Gobold.woff2') format('woff2'),url('assets/fonts/Gobold.woff') format('woff'),url('assets/fonts/Gobold.ttf') format('truetype');font-weight:400;font-display:swap}
+@font-face{font-family:'Gobold';src:url('assets/fonts/Gobold-Bold.woff2') format('woff2'),url('assets/fonts/Gobold-Bold.woff') format('woff'),url('assets/fonts/Gobold-Bold.ttf') format('truetype');font-weight:700;font-display:swap}
+:root{
+  --primary:#E63600; --secondary:#00A69B; --accent:#FFD300;
+  --ink:#000; --muted:#5a5a5a; --rule:#000; --hair:#d5d5d5; --alt:#f4f4f2;
+  --display:'Gobold','Arial Narrow',Arial,sans-serif;
+  --body:Arial,Helvetica,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:#fff;color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.45;-webkit-text-size-adjust:100%}
+.wrap{max-width:1120px;margin:0 auto;padding:0 16px}
+header{border-bottom:4px solid var(--rule);background:#fff}
+.masthead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:18px 0 14px}
+.logo{font-family:var(--display);font-weight:700;font-size:54px;line-height:.85;letter-spacing:.02em;text-transform:uppercase;color:var(--primary)}
+.logo span{color:var(--ink)}
+.tagline{font-size:13px;color:var(--muted);max-width:460px}
+.chip{margin-left:auto;font-family:var(--display);font-size:22px;letter-spacing:.06em;background:var(--ink);color:#fff;padding:4px 12px;text-transform:uppercase;text-decoration:none}
+.chip.alt{margin-left:8px;background:var(--primary)}
+.built{width:100%;font-size:11px;color:var(--muted);letter-spacing:.04em}
+h2.section-head{font-family:var(--display);font-size:30px;text-transform:uppercase;letter-spacing:.03em;margin:34px 0 4px;border-bottom:3px solid var(--rule);padding-bottom:4px}
+p.section-sub{font-size:13px;color:var(--muted);margin:0 0 14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.card{border:2px solid var(--rule);padding:12px 14px}
+.card .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.card .v{font-family:var(--display);font-size:38px;line-height:1}
+.card .n{font-size:11px;color:var(--muted)}
+.card .why{font-size:12px;margin-top:6px;color:var(--ink)}
+table.tbl{width:100%;border-collapse:collapse;font-size:14px;margin-bottom:10px}
+table.tbl th,table.tbl td{padding:6px 7px;text-align:right;border-bottom:1px solid var(--hair);white-space:nowrap}
+table.tbl th{font-family:var(--display);font-size:13px;letter-spacing:.05em;text-transform:uppercase;border-bottom:3px solid var(--rule);cursor:pointer;position:sticky;top:0;background:#fff}
+table.tbl th.left,table.tbl td.left{text-align:left}
+table.tbl tbody tr:nth-child(even){background:var(--alt)}
+th[aria-sort]{color:var(--primary)}
+.tag{font-size:10px;padding:1px 5px;margin-left:6px;border:1px solid var(--rule);text-transform:uppercase;letter-spacing:.04em}
+.tag.h{background:var(--accent)}
+.tag.p{background:var(--secondary);color:#fff}
+.spark{display:inline-flex;align-items:flex-end;gap:2px;height:22px;vertical-align:middle}
+.spark i{display:block;width:7px;background:var(--ink)}
+.spark i.up{background:var(--primary)}
+.controls{display:flex;gap:14px;flex-wrap:wrap;align-items:end;margin:8px 0 12px}
+.field label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+select,input{font-family:var(--body);font-size:14px;padding:5px 7px;border:2px solid var(--rule);background:#fff}
+.notice{background:var(--accent);border:3px solid var(--rule);padding:14px;margin:30px 0;font-size:14px}
+.notice code{background:#fff;padding:1px 5px;border:1px solid var(--rule)}
+.miss{color:var(--muted)}
+footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font-size:12px;color:var(--muted)}
+@media(max-width:720px){.hide{display:none}.logo{font-size:40px}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap masthead">
+    <div class="logo">x<span>DAWG</span></div>
+    <div class="tagline">Year over year. Whether a DAWG number is a trait a player carries, or a coincidence that happened once.</div>
+    <a class="chip" href="index.html">Leaderboard</a>
+    <span class="chip alt" id="span">&mdash;</span>
+    <div class="built" id="built"></div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="notice" id="empty" hidden>
+    <strong>No history has been built yet.</strong>
+    Run <code>python -m xdawg history --seasons 2023 2024 2025 2026</code>
+    (or the &ldquo;Build history&rdquo; workflow in Actions) to produce
+    <code>site/data/history.js</code>. Every uncached season is a full pull
+    from Savant, so budget roughly 40 minutes apiece.
+  </div>
+
+  <div id="body" hidden>
+
+    <h2 class="section-head">Does it hold up?</h2>
+    <p class="section-sub">Year-over-year correlation of DAWG+ with itself. A metric
+      that measures a real trait should say roughly the same thing about a player
+      twelve months later. Raw clutch metrics famously do not, which is the bar
+      this is trying to clear.</p>
+    <div class="cards" id="stability"></div>
+
+    <h2 class="section-head">Team DAWG vs what happened</h2>
+    <p class="section-sub">Pooled across every club and season in the window.
+      Regular-season record is the sanity check; the postseason columns are the
+      actual question. Note FIGHT uses Pythagorean expectation from runs rather
+      than real W-L, so these are not circular.</p>
+    <div class="cards" id="corr"></div>
+
+    <h2 class="section-head">Careers</h2>
+    <p class="section-sub">Mean DAWG+ across the window, with the standard deviation
+      beside it. A low spread with a high mean is the profile the metric is looking
+      for: a player who is like this every year, not one who had a season.</p>
+    <div class="controls">
+      <div class="field">
+        <label for="role">Type</label>
+        <select id="role">
+          <option value="ALL">Hitters &amp; pitchers</option>
+          <option value="hitter">Hitters</option>
+          <option value="pitcher">Pitchers</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="minyrs">Minimum seasons</label>
+        <select id="minyrs"></select>
+      </div>
+      <div class="field">
+        <label for="q">Search</label>
+        <input id="q" type="search" placeholder="Player or team" autocomplete="off">
+      </div>
+    </div>
+    <table class="tbl" id="ptbl">
+      <thead><tr id="phead"></tr></thead>
+      <tbody id="prows"></tbody>
+    </table>
+
+    <h2 class="section-head">Clubs</h2>
+    <p class="section-sub">Cumulative team DAWG by season, with how far that club got
+      in October beside it.</p>
+    <table class="tbl" id="ttbl">
+      <thead><tr id="thead"></tr></thead>
+      <tbody id="trows"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer class="wrap">
+  <div>xDAWG &mdash; not a talent metric. If this board looks like a WAR
+    leaderboard, the design has failed.</div>
+</footer>
+
+<script src="data/history.js" onerror="window.__nohist=1"></script>
+<script>
+(function(){
+  var H = window.XDAWG_HISTORY;
+  var empty = document.getElementById("empty");
+  var body  = document.getElementById("body");
+  if(!H || !H.seasons || !H.seasons.length){ empty.hidden = false; return; }
+  body.hidden = false;
+
+  var YEARS = H.seasons.map(String);
+  document.getElementById("span").textContent =
+    YEARS.length > 1 ? YEARS[0] + "–" + YEARS[YEARS.length-1] : YEARS[0];
+  document.getElementById("built").textContent = "Built " + (H.generated || "");
+
+  function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+  function num(v,d){ return (v===null||v===undefined||isNaN(v)) ? "" : Number(v).toFixed(d===undefined?1:d); }
+  function sgn(v){ return (v===null||v===undefined) ? "" : (v>0?"+":"") + Number(v).toFixed(3); }
+
+  // ---------- stability ----------
+  var st = document.getElementById("stability");
+  var spans = Object.keys(H.stability || {});
+  if(!spans.length){
+    st.innerHTML = '<div class="card"><div class="k">Not available</div>' +
+      '<div class="why">Stability needs at least two consecutive seasons in ' +
+      'the window. Build another year and it appears here.</div></div>';
+  } else {
+    st.innerHTML = spans.map(function(s){
+      var v = H.stability[s];
+      return '<div class="card"><div class="k">' + esc(s.replace("->","→")) + '</div>' +
+        '<div class="v">' + (v.r===null ? "&mdash;" : sgn(v.r)) + '</div>' +
+        '<div class="n">' + v.n + ' players in both seasons</div></div>';
+    }).join("");
+  }
+
+  // ---------- correlations ----------
+  var CORR_LABEL = {
+    dawg_vs_win_pct: ["Cumulative DAWG vs win%", "Does a team of dawgs win more games?"],
+    dawg_plus_vs_win_pct: ["Roster DAWG+ vs win%", "Rate version, so roster size cannot inflate it."],
+    dawg_vs_postseason_round: ["DAWG vs how far they got", "0 missed, 5 won it all."],
+    dawg_vs_postseason_wins: ["DAWG vs postseason wins", "Games actually won in October."],
+    wdawg_vs_postseason_round: ["wDAWG vs how far they got", "Talent-neutral version of the same question."]
+  };
+  document.getElementById("corr").innerHTML =
+    Object.keys(H.correlations || {}).map(function(k){
+      var c = H.correlations[k], lab = CORR_LABEL[k] || [k, ""];
+      return '<div class="card"><div class="k">' + esc(lab[0]) + '</div>' +
+        '<div class="v">' + (c.r===null ? "&mdash;" : sgn(c.r)) + '</div>' +
+        '<div class="n">n = ' + c.n + ' club-seasons</div>' +
+        '<div class="why">' + esc(lab[1]) + '</div></div>';
+    }).join("");
+
+  // ---------- careers ----------
+  var minsel = document.getElementById("minyrs");
+  minsel.innerHTML = YEARS.map(function(_,i){
+    var v = i+1;
+    return '<option value="'+v+'"'+(v===Math.min(2,YEARS.length)?" selected":"")+'>'+v+'+</option>';
+  }).join("");
+
+  var PCOLS = [{k:"name",t:"Player",left:true},{k:"team",t:"Team",left:true},
+               {k:"n_seasons",t:"Yrs"},{k:"mean_dawg_plus",t:"Mean DAWG+"},
+               {k:"sd_dawg_plus",t:"SD"},{k:"best",t:"Best"},{k:"worst",t:"Worst"},
+               {k:"trend",t:"Trend/yr"},{k:"_spark",t:"By season",left:true,nosort:true}]
+              .concat(YEARS.map(function(y){ return {k:"y"+y, t:y, hide:true}; }));
+
+  var psort = {key:"mean_dawg_plus", dir:-1};
+  document.getElementById("phead").innerHTML = PCOLS.map(function(c){
+    return '<th class="'+(c.left?"left ":"")+(c.hide?"hide":"")+'" data-k="'+c.k+'">'+esc(c.t)+'</th>';
+  }).join("");
+
+  function seasonVal(p,y){ var s=p.seasons[y]; return s ? s.dawg_plus : null; }
+
+  function spark(p){
+    var vals = YEARS.map(function(y){ return seasonVal(p,y); });
+    var got = vals.filter(function(v){ return v!==null && v!==undefined; });
+    if(!got.length) return "";
+    var lo = Math.min.apply(null, got.concat([85])), hi = Math.max.apply(null, got.concat([115]));
+    return '<span class="spark">' + vals.map(function(v,i){
+      if(v===null||v===undefined) return '<i style="height:2px;background:#ccc" title="'+YEARS[i]+': did not qualify"></i>';
+      var h = Math.max(3, Math.round(20 * (v-lo) / ((hi-lo)||1)));
+      return '<i class="'+(v>=100?"up":"")+'" style="height:'+h+'px" title="'+YEARS[i]+': '+num(v)+'"></i>';
+    }).join("") + '</span>';
+  }
+
+  function pvalue(p,k){
+    if(k==="_spark") return 0;
+    if(k.charAt(0)==="y" && p.seasons[k.slice(1)]!==undefined) return seasonVal(p,k.slice(1));
+    if(k.charAt(0)==="y") return null;
+    return p[k];
+  }
+
+  function renderPlayers(){
+    var role = document.getElementById("role").value;
+    var minY = Number(document.getElementById("minyrs").value);
+    var q = document.getElementById("q").value.trim().toLowerCase();
+    var rows = H.players.filter(function(p){
+      if(role!=="ALL" && p.role!==role) return false;
+      if((p.n_seasons||0) < minY) return false;
+      if(q && (p.name+" "+(p.team||"")).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    rows.sort(function(a,b){
+      var x = pvalue(a,psort.key), y = pvalue(b,psort.key);
+      if(x===null||x===undefined) return 1;
+      if(y===null||y===undefined) return -1;
+      if(typeof x === "string") return psort.dir * x.localeCompare(y);
+      return psort.dir * (x - y);
+    });
+    document.getElementById("prows").innerHTML = rows.slice(0,400).map(function(p){
+      return "<tr>" + PCOLS.map(function(c){
+        var cls = (c.left?"left ":"") + (c.hide?"hide":"");
+        if(c.k==="name") return '<td class="'+cls+'">'+esc(p.name)+
+          '<span class="tag '+(p.role==="hitter"?"h":"p")+'">'+(p.role==="hitter"?"H":"P")+'</span></td>';
+        if(c.k==="_spark") return '<td class="'+cls+'">'+spark(p)+'</td>';
+        var v = pvalue(p,c.k);
+        if(c.k==="team") return '<td class="'+cls+'">'+esc(v||"")+'</td>';
+        if(c.k==="n_seasons") return '<td class="'+cls+'">'+(v||0)+'</td>';
+        if(v===null||v===undefined) return '<td class="'+cls+' miss">&mdash;</td>';
+        if(c.k==="trend") return '<td class="'+cls+'">'+(v>0?"+":"")+num(v)+'</td>';
+        return '<td class="'+cls+'">'+num(v)+'</td>';
+      }).join("") + "</tr>";
+    }).join("");
+    Array.prototype.forEach.call(document.querySelectorAll("#phead th"), function(th){
+      if(th.dataset.k===psort.key) th.setAttribute("aria-sort", psort.dir<0?"descending":"ascending");
+      else th.removeAttribute("aria-sort");
+    });
+  }
+
+  document.getElementById("phead").addEventListener("click", function(e){
+    var th = e.target.closest("th"); if(!th) return;
+    var k = th.dataset.k; if(k==="_spark") return;
+    psort = {key:k, dir: (psort.key===k ? -psort.dir : (k==="name"||k==="team" ? 1 : -1))};
+    renderPlayers();
+  });
+  ["role","minyrs"].forEach(function(id){
+    document.getElementById(id).addEventListener("change", renderPlayers);
+  });
+  document.getElementById("q").addEventListener("input", renderPlayers);
+  renderPlayers();
+
+  // ---------- clubs ----------
+  var TCOLS = [{k:"team",t:"Club",left:true}]
+    .concat(YEARS.map(function(y){ return {k:y, t:y}; }));
+  document.getElementById("thead").innerHTML = TCOLS.map(function(c){
+    return '<th class="'+(c.left?"left":"")+'" data-k="'+c.k+'">'+esc(c.t)+'</th>';
+  }).join("");
+
+  var tsort = {key: YEARS[YEARS.length-1], dir:-1};
+  function tval(t,k){
+    if(k==="team") return t.team;
+    var s = t.seasons[k];
+    return s ? s.dawg : null;
+  }
+  function renderTeams(){
+    var rows = H.teams.slice();
+    rows.sort(function(a,b){
+      var x = tval(a,tsort.key), y = tval(b,tsort.key);
+      if(x===null||x===undefined) return 1;
+      if(y===null||y===undefined) return -1;
+      if(typeof x === "string") return tsort.dir * x.localeCompare(y);
+      return tsort.dir * (x - y);
+    });
+    document.getElementById("trows").innerHTML = rows.map(function(t){
+      return '<tr><td class="left"><strong>'+esc(t.team)+'</strong></td>' +
+        YEARS.map(function(y){
+          var s = t.seasons[y];
+          if(!s) return '<td class="miss">&mdash;</td>';
+          var label = s.round_label || "Missed";
+          var w = (s.wins!==null && s.wins!==undefined) ? s.wins+"-"+s.losses : "";
+          return '<td title="'+esc(y+": "+w+", "+label)+'">' + num(s.dawg,1) +
+            '<div class="n" style="font-size:10px;color:var(--muted)">' +
+            esc(w) + (s.round ? " · " + esc(label) : "") + '</div></td>';
+        }).join("") + '</tr>';
+    }).join("");
+    Array.prototype.forEach.call(document.querySelectorAll("#thead th"), function(th){
+      if(th.dataset.k===tsort.key) th.setAttribute("aria-sort", tsort.dir<0?"descending":"ascending");
+      else th.removeAttribute("aria-sort");
+    });
+  }
+  document.getElementById("thead").addEventListener("click", function(e){
+    var th = e.target.closest("th"); if(!th) return;
+    var k = th.dataset.k;
+    tsort = {key:k, dir: (tsort.key===k ? -tsort.dir : (k==="team" ? 1 : -1))};
+    renderTeams();
+  });
+  renderTeams();
+})();
+</script>
+</body>
+</html>

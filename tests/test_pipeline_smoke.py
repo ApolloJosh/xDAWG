@@ -103,6 +103,7 @@ def _synthetic_statcast() -> pd.DataFrame:
         "away_team": np.where(away == home, "NYY", away),
     })
 
+    df = _assign_pitching_roles(df)
     df = _add_runner_continuity(df)
 
     # Fielder attribution, mostly null (only balls actually fielded).
@@ -153,6 +154,40 @@ def _make_nullable(df: pd.DataFrame) -> pd.DataFrame:
         col = f"fielder_{pos}"
         if col in df.columns:
             df[col] = df[col].astype("Float64")
+    return df
+
+
+def _assign_pitching_roles(df: pd.DataFrame) -> pd.DataFrame:
+    """Give the frame a real starter/reliever structure and honest innings.
+
+    Drawing a pitcher independently per row makes everyone the starter of
+    nothing. `workhorse` keys off whoever threw to a side's first batter and
+    then requires that a majority of his appearances be starts -- with random
+    assignment nobody clears that, both terms compute nothing, and the test
+    that guards them passes vacuously. Same story for `inning`: drawn at
+    random it has no relationship to `at_bat_number`, so half-innings do not
+    contain consecutive batters and the outs-recorded reconstruction has
+    nothing coherent to reconstruct.
+
+    This is the same class of fixture bug as the fielders once being drawn
+    from a different id pool than the batters: the code ran, computed
+    nothing, and the test said fine.
+    """
+    starters = np.arange(700_000, 700_012)
+    relief = np.arange(700_012, 700_000 + N_PITCHERS)
+
+    ab = df["at_bat_number"].to_numpy()
+    game = df["game_pk"].to_numpy()
+    df["inning"] = np.minimum(1 + (ab - 1) // 5, 11)
+    side = (df["inning_topbot"].to_numpy() == "Top").astype(int)
+
+    # One designated starter per game per side, deterministic in game_pk so
+    # the same club's starter is the same man across the whole game.
+    mine = starters[(game * 2 + side) % len(starters)]
+    early = df["inning"].to_numpy() <= 6
+    df["pitcher"] = np.where(
+        early, mine, relief[(game * 7 + ab) % len(relief)]
+    ).astype("int64")
     return df
 
 
@@ -230,10 +265,17 @@ def _synthetic_oaa() -> pd.DataFrame:
 
 
 def _synthetic_standings() -> pd.DataFrame:
+    wins = RNG.integers(55, 105, len(TEAM_LIST)).astype(float)
     return pd.DataFrame({
         "team": TEAM_LIST,
         "rs": RNG.integers(520, 830, len(TEAM_LIST)).astype(float),
         "ra": RNG.integers(520, 830, len(TEAM_LIST)).astype(float),
+        # W-L is not optional in the fixture. Without it every downstream
+        # comparison of DAWG against what actually happened -- the team board
+        # here, the DAWG-vs-record correlations in the history view -- runs on
+        # an all-null column and reports n = 0 rather than failing.
+        "wins": wins,
+        "losses": 162.0 - wins,
     })
 
 
@@ -251,6 +293,60 @@ def offline(monkeypatch):
     monkeypatch.setattr(ingest, "player_names",
                         lambda p: {int(i): f"Player {i}" for i in
                                    set(p["batter"]) | set(p["pitcher"])})
+
+
+def _synthetic_postseason() -> pd.DataFrame:
+    teams = TEAM_LIST[:12]
+    rounds = [5, 4, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1]
+    return pd.DataFrame({
+        "team": teams,
+        "ps_games": RNG.integers(3, 20, len(teams)),
+        "ps_wins": RNG.integers(0, 11, len(teams)),
+        "round": rounds,
+        "round_label": [f"Round {r}" for r in rounds],
+    })
+
+
+def test_history_builds_across_seasons(offline, monkeypatch):
+    """The multi-season path must assemble, not just the single-season one.
+
+    Both synthetic seasons come from the same generator, so the numbers here
+    are meaningless -- what is being checked is that every season lines up on
+    the same player keys and that the cross-year statistics survive a player
+    who appears in one season and not another.
+    """
+    from xdawg import history
+
+    monkeypatch.setattr(ingest, "load_postseason",
+                        lambda *a, **k: _synthetic_postseason())
+    monkeypatch.setattr(history.ingest, "load_postseason",
+                        lambda *a, **k: _synthetic_postseason())
+
+    payload = history.build_history([2025, 2026])
+
+    assert payload["seasons"] == [2025, 2026]
+    assert payload["players"], "no player careers assembled"
+    assert payload["teams"], "no team careers assembled"
+    assert "2025->2026" in payload["stability"]
+    assert payload["stability"]["2025->2026"]["n"] > 0, (
+        "no player matched across seasons -- the career key is wrong"
+    )
+    # A player in both seasons must carry both, and the spread must compute.
+    multi = [p for p in payload["players"] if p["n_seasons"] >= 2]
+    assert multi, "nobody appears in more than one season"
+    assert multi[0]["sd_dawg_plus"] is not None
+    # Postseason must have threaded through to the team rows.
+    rounds = [s.get("round") for t in payload["teams"]
+              for s in t["seasons"].values()]
+    assert any(r for r in rounds), "postseason results never reached the teams"
+
+    # Every correlation must have found pairs to correlate. These report
+    # n = 0 and an r of None when a column never threads through, which
+    # looks like a finding ("no relationship") rather than a plumbing bug.
+    for name, c in payload["correlations"].items():
+        assert c["n"] > 0, f"{name} correlated nothing -- a column is missing"
+
+    assert history.summarize(payload)
 
 
 def test_full_pipeline_runs_on_nullable_statcast(offline):
@@ -321,3 +417,18 @@ def test_payload_builds_and_pillars_are_alive(offline):
                 "fight_process_delta", "ev_situational", "wpa_clutch_delta",
                 "contender_rv_delta", "division_rv_delta"):
         assert key in present, f"{key} computed nothing"
+
+    # Pitcher side. `long_start_rate` / `blowup_rate` close the survivorship
+    # hole in GRIT and `jam_escape_runs` is the outcome half of the jam
+    # grade; all three fail by computing nothing rather than by raising, and
+    # a pitcher GRIT that quietly reverts to survivors-only is precisely the
+    # bug they were added to fix.
+    pitcher_rows = [p for p in payload["players"] if p["role"] == "pitcher"]
+    p_present = {
+        c["key"]
+        for p in pitcher_rows
+        for pil in p["pillars"].values()
+        for c in pil["components"]
+    }
+    for key in ("long_start_rate", "blowup_rate", "jam_escape_runs"):
+        assert key in p_present, f"{key} computed nothing"

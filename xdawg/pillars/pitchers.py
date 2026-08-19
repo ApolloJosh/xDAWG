@@ -220,9 +220,15 @@ def grit(p: pd.DataFrame) -> pd.DataFrame:
 def hunt(p: pd.DataFrame) -> pd.DataFrame:
     """HUNT -- the kill shot.
 
-    Note that escaping jams is measured through PROCESS (chase rate, ground
-    balls with runners on) rather than strand rate, because raw LOB% is one
-    of the noisiest figures in the sport.
+    Escaping jams is read TWO ways, and deliberately so. `jam_escape_process`
+    asks whether he kept executing with traffic on -- chase rate, immune to
+    what the defense did behind him. `jam_escape_runs` asks what the
+    scoreboard says. Process alone was the original design, on the argument
+    that strand rate is too noisy to grade; that argument was right about
+    strand rate and wrong as a reason to ignore outcomes altogether, because
+    a run-expectancy-relative measure is far steadier than LOB% and a
+    pitcher who blows up every time he gets in trouble should not be able to
+    grade out fine on the strength of his swing-and-miss.
     """
     d = tag_pitch_events(stuff_proxy(p))
     g = "pitcher"
@@ -246,7 +252,182 @@ def hunt(p: pd.DataFrame) -> pd.DataFrame:
         dtype="float64", na_value=np.nan)
     merge(weighted_delta(runners, g, "_chase_induced", min_n=60), "jam_escape_process")
 
+    runs = jam_escape_runs(p)
+    if not runs.empty:
+        out = runs if out is None else out.merge(runs, on=g, how="outer")
+
     return out if out is not None else pd.DataFrame(columns=[g])
+
+
+def half_inning_pas(p: pd.DataFrame) -> pd.DataFrame:
+    """One row per plate appearance, with the half-inning bookkeeping attached.
+
+    Two derived quantities come out of this and nothing else in the package
+    could produce them:
+
+    `outs_recorded` -- how many outs this plate appearance actually produced.
+    Statcast ships the out count at the START of a PA and never the end, so
+    it is recovered from the transition to the next PA in the same half
+    inning; the last PA of a half inning is assumed to have finished it at
+    three. That is how many outs a pitcher recorded in an outing, which is
+    how innings pitched exist at all here.
+
+    `rest_of_inning_rv` -- the run value banked from this PA through the end
+    of the half inning. Because `delta_run_exp` is a RE24 term, summing it to
+    the end of an inning (where run expectancy is zero by definition) gives
+    exactly `runs actually scored - runs expected from the state we were in`.
+    That is what makes an outcome-based jam grade possible without an
+    externally sourced run expectancy table.
+    """
+    d = p.sort_values(["game_pk", "at_bat_number", "pitch_number"])
+    first = d.drop_duplicates(["game_pk", "at_bat_number"], keep="first").copy()
+    rv = (
+        d.groupby(["game_pk", "at_bat_number"])["delta_run_exp"]
+        .sum().rename("rv").reset_index()
+    )
+    pa = first.merge(rv, on=["game_pk", "at_bat_number"], how="left")
+
+    # Everything that gets compared or arithmetic'd is forced out of the
+    # nullable extension dtypes first -- pd.NA in a comparison returns NA,
+    # not False, and it poisons the whole chain three functions later.
+    pa["_outs"] = pd.to_numeric(pa["outs_when_up"], errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan)
+    pa["rv"] = pd.to_numeric(pa["rv"], errors="coerce").fillna(0.0).to_numpy(
+        dtype="float64", na_value=0.0)
+    pa["_half"] = (
+        pa["game_pk"].astype(str) + "|" + pa["inning"].astype(str)
+        + "|" + pa["inning_topbot"].astype(str)
+    )
+    pa = pa.sort_values(["game_pk", "at_bat_number"])
+
+    grp = pa.groupby("_half", sort=False)
+    pa["outs_recorded"] = (
+        grp["_outs"].shift(-1).fillna(3.0) - pa["_outs"]
+    ).clip(lower=0)
+    # Reverse cumulative sum within the half inning. Reversing a Series keeps
+    # its index labels, so the values realign on assignment.
+    pa["rest_of_inning_rv"] = grp["rv"].transform(
+        lambda s: s[::-1].cumsum()[::-1]
+    )
+    return pa
+
+
+def _is_jam(pa: pd.DataFrame) -> np.ndarray:
+    """Genuine trouble: two or more aboard, or a runner on third with an out to give."""
+    on = pa[["on_1b", "on_2b", "on_3b"]].notna()
+    n_on = on.sum(axis=1).to_numpy(dtype="float64")
+    on3 = on["on_3b"].to_numpy(dtype=bool)
+    outs = pd.to_numeric(pa["outs_when_up"], errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan)
+    return (n_on >= 2) | (on3 & (outs < 2))
+
+
+def jam_escape_runs(p: pd.DataFrame, pa: pd.DataFrame | None = None) -> pd.DataFrame:
+    """What actually HAPPENED once he got himself into trouble.
+
+    The original jam grade was pure process -- chase rate with runners on --
+    on the reasoning that strand rate is one of the noisiest numbers in the
+    sport. That reasoning holds for strand rate and does not hold for this:
+    run value against the run expectancy of the exact state he was in is a
+    far better behaved measure, and leaving the outcome out entirely meant a
+    pitcher who induced good swings and still gave up four runs graded the
+    same as one who got out of it.
+
+    Charged from the first jam in each half inning through the END of that
+    half inning, including the runs that scored after he was pulled. That is
+    deliberate and it is the tough part: the runners were his, and a pitcher
+    who reliably hands a two-on mess to the bullpen has not escaped anything.
+    The reliever who cleans it up is separately credited by
+    `inherited_runners`, so the work is counted once for each of them and
+    nobody's ledger is silently doubled.
+    """
+    pa = half_inning_pas(p) if pa is None else pa
+    jams = pa[_is_jam(pa)].drop_duplicates("_half", keep="first").copy()
+    if jams.empty:
+        return pd.DataFrame(columns=["pitcher", "jam_escape_runs",
+                                     "jam_escape_runs__lg", "jam_escape_runs__n"])
+    # Run value is from the batting team's view, so negate: fewer runs than
+    # the state expected is a positive number here, like every other pitcher
+    # component.
+    jams["_escape"] = -jams["rest_of_inning_rv"]
+    out = weighted_delta(jams, "pitcher", "_escape", min_n=8)
+    return out.rename(columns={
+        "delta": "jam_escape_runs",
+        "league_delta": "jam_escape_runs__lg",
+        "n": "jam_escape_runs__n",
+    })
+
+
+def workhorse(p: pd.DataFrame, pa: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Length of start, in both directions. Starters only.
+
+    This exists because the rest of pitcher GRIT is CONDITIONED ON SURVIVING.
+    `stuff_after_75` is only defined for a pitcher who reached pitch 76, and
+    `third_time_through` only for one who faced the order a third time -- so
+    a starter who gets knocked out in the second inning contributes nothing
+    to either, and is graded exclusively on the nights he lasted. His
+    disasters were structurally invisible. That is a selection bias big
+    enough to invert a pitcher's score, and it is why the eye test and the
+    leaderboard disagreed on the blow-up-prone starters.
+
+    Two components rather than one blended rate, because they are different
+    claims and the breakdown panel should be able to say which one applies:
+
+      long_start_rate  share of starts reaching 15 outs. The innings eater who
+                       saves the bullpen is a dawg, full stop.
+      blowup_rate      share of starts failing to reach 9 outs. Inverted in
+                       config -- this is the one that finally costs a pitcher
+                       something for not getting out of the first.
+
+    Relievers get no row at all, so both terms shrink to exactly zero for
+    them rather than grading them on a standard that does not apply.
+    """
+    pa = half_inning_pas(p) if pa is None else pa
+
+    # The starter for a side is whoever threw to that side's first batter.
+    firsts = (
+        pa.sort_values("at_bat_number")
+        .drop_duplicates(["game_pk", "inning_topbot"], keep="first")
+        [["game_pk", "inning_topbot", "pitcher"]]
+        .assign(is_start=True)
+    )
+    app = pa.groupby(["pitcher", "game_pk"]).agg(
+        outs=("outs_recorded", "sum"),
+        inning_topbot=("inning_topbot", "first"),
+    ).reset_index()
+    app = app.merge(firsts, on=["game_pk", "inning_topbot", "pitcher"], how="left")
+    app["is_start"] = app["is_start"].fillna(False).to_numpy(dtype=bool)
+
+    # An OPENER is indistinguishable from a starter who got knocked out --
+    # both threw to the first batter and both left inside two innings, and
+    # nothing in the pitch data says which one was the plan. So the terms are
+    # restricted to pitchers who are actually starters: a majority of their
+    # appearances are starts, and there are at least three of them. A reliever
+    # who opened twice is not graded on it; a genuine opener used that way all
+    # year still is, which is the one case this gets wrong and cannot fix from
+    # this data alone.
+    share = app.groupby("pitcher")["is_start"].agg(["mean", "sum"])
+    real = share[(share["mean"] >= 0.5) & (share["sum"] >= 3)].index
+    starts = app[app["is_start"] & app["pitcher"].isin(real)]
+    if starts.empty:
+        return pd.DataFrame(columns=["pitcher", "long_start_rate",
+                                     "long_start_rate__n", "blowup_rate",
+                                     "blowup_rate__n"])
+
+    outs = pd.to_numeric(starts["outs"], errors="coerce").fillna(0.0)
+    starts = starts.assign(
+        _long=(outs >= 15).astype(float),
+        _blow=(outs < 9).astype(float),
+    )
+    g = starts.groupby("pitcher").agg(
+        long_start_rate=("_long", "mean"),
+        blowup_rate=("_blow", "mean"),
+        n=("_long", "size"),
+    ).reset_index()
+    g["long_start_rate__n"] = g["n"]
+    g["blowup_rate__n"] = g["n"]
+    return g[["pitcher", "long_start_rate", "long_start_rate__n",
+              "blowup_rate", "blowup_rate__n"]]
 
 
 def inherited_runners(p: pd.DataFrame) -> pd.DataFrame:

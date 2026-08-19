@@ -40,11 +40,14 @@ LABELS = {
     "stuff_after_75": "Stuff after pitch 75",
     "third_time_through": "Third time through order",
     "inherited_runners": "Inherited runners",
+    "long_start_rate": "Starts of 5+ innings",
+    "blowup_rate": "Knocked out early",
     "workload": "Workload willingness",
     "pitching_inside": "Pitching inside",
     "risp_stuff_delta": "Stuff with RISP",
     "putaway_lev": "Put-away rate",
-    "jam_escape_process": "Escaping jams",
+    "jam_escape_process": "Escaping jams, process",
+    "jam_escape_runs": "Escaping jams, damage",
 }
 
 
@@ -202,12 +205,13 @@ def write_site_data(payload: dict, site_dir: str | Path) -> Path:
     return out
 
 
-# Matches `src="data/data.js"` with or without an existing ?v= stamp.
-_DATA_SRC = re.compile(r'src="data/data\.js(?:\?v=[^"]*)?"')
-
-
-def _stamp_cache_buster(site_dir: Path, generated: str) -> None:
-    """Version the data.js script tag so browsers pick up a new build.
+def _stamp_cache_buster(
+    site_dir: Path,
+    generated: str,
+    page: str = "index.html",
+    data: str = "data/data.js",
+) -> None:
+    """Version the data script tag so browsers pick up a new build.
 
     `index.html` is a static file at a stable URL, so a browser that has
     already cached `data/data.js` will keep serving the old numbers after a
@@ -218,12 +222,16 @@ def _stamp_cache_buster(site_dir: Path, generated: str) -> None:
     Rewriting the tag to `data/data.js?v=<build timestamp>` gives each build
     a distinct URL, so the fetch misses cache exactly when it should and
     keeps hitting it the rest of the time.
+
+    Parameterized over page and data file because the history view has
+    exactly the same problem and would have hit it exactly the same way.
     """
-    index = site_dir / "index.html"
-    if not index.exists():
+    target = site_dir / page
+    if not target.exists():
         return
     version = "".join(ch for ch in str(generated) if ch.isdigit()) or "0"
-    html = index.read_text(encoding="utf-8")
-    stamped, n = _DATA_SRC.subn(f'src="data/data.js?v={version}"', html)
+    pattern = re.compile(r'src="' + re.escape(data) + r'(?:\?v=[^"]*)?"')
+    html = target.read_text(encoding="utf-8")
+    stamped, n = pattern.subn(f'src="{data}?v={version}"', html)
     if n and stamped != html:
-        index.write_text(stamped, encoding="utf-8")
+        target.write_text(stamped, encoding="utf-8")
