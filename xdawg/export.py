@@ -87,10 +87,19 @@ def build_payload(
                     # config to document the intended shape of a pillar, but
                     # showing one in the breakdown panel implies it moved the
                     # score when it contributed exactly nothing.
+                    # `z` is the league-baselined reading (feeds DAWG+),
+                    # `z_w` the self-referenced one (feeds wDAWG+). Both are
+                    # emitted so the panel can explain either stat; showing
+                    # only `z` meant the wDAWG+ number on screen had no
+                    # visible derivation anywhere.
                     "components": [
-                        {"key": c, "label": LABELS.get(c, c), "z": _clean(r.get(f"_c_{c}"))}
+                        {"key": c, "label": LABELS.get(c, c),
+                         "z": _clean(r.get(f"_c_{c}")),
+                         "z_w": _clean(r.get(f"_cw_{c}"))}
                         for c, cfg in COMPONENTS[role][key].items()
-                        if cfg["weight"] > 0 and _clean(r.get(f"_c_{c}")) is not None
+                        if cfg["weight"] > 0 and (
+                            _clean(r.get(f"_c_{c}")) is not None
+                            or _clean(r.get(f"_cw_{c}")) is not None)
                     ],
                 }
             players.append({

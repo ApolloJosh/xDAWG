@@ -330,7 +330,17 @@ def _score_both(df: pd.DataFrame, role: str) -> pd.DataFrame:
                      rate_name="DAWG+", count_name="DAWG")
     selfref = compute(df, role, rate_name="wDAWG+", count_name="wDAWG")
 
-    keep = ["player_id", "wDAWG+", "wDAWG"] + [f"{c}_w" for c in _PILLAR_COLS]
+    # The per-component detail from the self-referenced pass is carried
+    # through too, under `_cw_` instead of `_c_`. Without it the breakdown
+    # panel can only ever explain DAWG+: it shows the pillar totals for both
+    # stats but the component rows for one, so a player whose two numbers
+    # disagree sharply -- an elite hitter clearing his own bar by less than
+    # he clears the league's -- is undiagnosable on the site.
+    comps = [c for c in selfref.columns if c.startswith("_c_")]
+    selfref = selfref.rename(columns={c: f"_cw_{c[3:]}" for c in comps})
+    keep = (["player_id", "wDAWG+", "wDAWG"]
+            + [f"{c}_w" for c in _PILLAR_COLS]
+            + [f"_cw_{c[3:]}" for c in comps])
     selfref = selfref.rename(columns={c: f"{c}_w" for c in _PILLAR_COLS})
     selfref = selfref[[c for c in keep if c in selfref.columns]]
 
