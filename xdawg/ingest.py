@@ -43,6 +43,30 @@ def _cache_path(name: str) -> Path:
     return CACHE / f"{name}.parquet"
 
 
+def _read_cache(name: str, required: tuple[str, ...] = ()) -> pd.DataFrame | None:
+    """Read a cached frame, but only if it still has the columns we need.
+
+    The cache is keyed on season alone, so a parquet written before a loader
+    learned to fetch a new field keeps being served forever and the new field
+    silently never appears. That is exactly what happened to team W-L: runs
+    scored and allowed came back fine because they were always cached, while
+    `wins` stayed empty on every team because the cached standings predated
+    it. Nothing errored; the column was just quietly absent.
+
+    Treating a schema-short cache as a miss means adding a column to a loader
+    is self-healing on the next run rather than needing a manual cache purge.
+    """
+    path = _cache_path(name)
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        print(f"[xdawg] cache {name} predates {missing}; refetching")
+        return None
+    return df
+
+
 def pick_col(df: pd.DataFrame, *candidates: str) -> str | None:
     """Find the first candidate column actually present, loosely matched.
 
@@ -381,8 +405,10 @@ def _standings_from_statsapi(season: int) -> pd.DataFrame:
 def load_standings(season: int, refresh: bool = False) -> pd.DataFrame | None:
     """Team runs scored / allowed, for the FIGHT opponent-quality term."""
     path = _cache_path(f"standings_{season}")
-    if path.exists() and not refresh:
-        return pd.read_parquet(path)
+    if not refresh:
+        cached = _read_cache(f"standings_{season}", ("team", "rs", "ra", "wins", "losses"))
+        if cached is not None:
+            return cached
 
     errors = []
     try:
