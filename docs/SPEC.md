@@ -113,6 +113,41 @@ Same four pillars, different instruments. Note on "stuff": FanGraphs' Stuff+ isn
 
 ---
 
+### A known asymmetry in the two stat families
+
+Every leverage delta ships two readings — one against the player's own flat
+mean (feeds wDAWG+), one against the league's (feeds DAWG+). But the
+components measured on **absolute level** have no self-referenced version,
+because there is nothing to self-reference: hustle, HBP above expected, extra
+bases taken, availability, and season-total OAA are single numbers, not
+splits. They pass into BOTH stats unchanged.
+
+That is **26.0% of a hitter's score and 25.2% of a pitcher's** identical
+across the two families. It matters most for exactly the players the two
+numbers disagree about: a hitter whose self-referenced deltas sit near zero —
+which is what a player with no real clutch *change* looks like, however great
+he is — has his wDAWG+ decided almost entirely by that quarter. For an elite
+slugger who is a station-to-station baserunner and a poor fielder, wDAWG+
+stops being "how much he rises to the moment" and becomes a baserunning and
+availability score.
+
+Worth knowing what is NOT the cause. Simulation of the null (no clutch skill,
+600 PA) shows `weighted_delta` is unbiased at every talent level — mean delta
+is zero at a .55 true rate and at a .93 one. Its noise actually *falls* as the
+baseline rises (sd .0136 → .0070), so a real +5-point clutch effect is easier
+to detect in an elite hitter, not harder: signal-to-noise goes 1.24 → 2.97. A
+high baseline does not make a good wDAWG+ harder to earn. The absolute-
+component block does.
+
+The fix, if it is wanted, is to drop the absolute components from the wDAWG
+pass and renormalize — `score_pillar` already renormalizes around missing
+components, so this is a flag, not a rewrite. It would make wDAWG+ mean
+strictly what it claims to. It would also stop wDAWG+ from penalizing a DH for
+being a DH, which is either the point or a loss depending on what "dawg" is
+supposed to include.
+
+---
+
 ## 4. FIGHT — the opponent-quality engine
 
 Every plate appearance (or batter faced) gets a **fight weight** alongside its leverage weight.
