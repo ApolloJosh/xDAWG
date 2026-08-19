@@ -304,7 +304,31 @@ footer strong{color:var(--ink)}
   $("tdyear").textContent = D.season;
   if (D.generated) $("gen").textContent = "Generated " + D.generated + ".";
 
+  // Schema guard. A stale data.js renders as a table full of em-dashes with
+  // an empty team section, which reads like "the stats broke" when in fact
+  // the site is simply newer than the payload it was handed. That has cost
+  // more than one debugging round, so say it out loud instead of showing
+  // dashes and letting it look like a calculation failure.
+  var _p0 = (D.players && D.players[0]) || null;
+  var _missing = [];
+  if (_p0){
+    ["dawg_plus","dawg","wdawg_plus","wdawg"].forEach(function(k){
+      if (_p0[k] === undefined) _missing.push(k);
+    });
+  }
+  if (!D.team_table) _missing.push("team_table");
+
+  if (_p0 && _missing.length){
+    $("notice").hidden = false;
+    $("notice-text").textContent =
+      "This data file is older than the page: it is missing " +
+      _missing.join(", ") + ". The numbers shown are incomplete, not wrong — " +
+      "re-run \u201cBuild real data\u201d, then hard-refresh.";
+  }
+
   if (D.synthetic){
+    // Synthetic wins over the schema notice: placeholder data is the more
+    // important thing to know about.
     $("notice").hidden = false;
     $("notice-text").textContent =
       "Placeholder data. These names are real players but every number on this page is randomly generated — " +
