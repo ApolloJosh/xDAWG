@@ -1,0 +1,122 @@
+name: Build history
+
+# Several full seasons in one job. Each uncached season is its own ~40 minute
+# Savant pull, so four years is most of an afternoon -- the cache below is
+# what stops that being paid twice.
+#
+# Statcast pitch tracking starts in 2015; earlier seasons lack the pitch-level
+# fields every pillar is built from and the CLI refuses them outright.
+#
+# Trigger: Actions tab -> Build history -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: Space-separated seasons, e.g. "2023 2024 2025 2026"
+        required: false
+        default: "2024 2025 2026"
+      refresh:
+        description: Ignore the cached Statcast pulls and re-fetch from Savant
+        type: boolean
+        required: false
+        default: false
+      commit:
+        description: Commit history.js to main (this deploys it)
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xdawg-history
+  cancel-in-progress: false
+
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    # GitHub caps a hosted job at six hours. Four cold seasons fit; six would
+    # not, which is why the default input is three.
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        # Before the pull, not after. A crash in the history assembly costs
+        # twenty seconds here and three hours if it surfaces at the end.
+        run: |
+          pip install pytest
+          python -m pytest tests/ -q
+
+      - name: Restore Statcast cache
+        # One cache for every season, so a rerun that adds a year only pays
+        # for the year it added. The key rotates per run and the restore-key
+        # prefix picks up the newest previous copy, which is how the cache
+        # grows instead of being pinned to whatever the first run put in it.
+        if: ${{ !inputs.refresh }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xdawg_cache
+          key: statcast-history-${{ github.run_id }}
+          restore-keys: |
+            statcast-history-
+
+      - name: Build history
+        env:
+          PYTHONWARNINGS: always
+          XDAWG_CACHE: ${{ runner.temp }}/xdawg_cache
+        run: |
+          set -o pipefail
+          python -u -m xdawg history \
+            --seasons ${{ inputs.seasons }} \
+            ${{ inputs.refresh && '--refresh' || '' }} 2>&1 | tee history.log
+
+      - name: Summary
+        # The stability and correlation readout is the actual product of this
+        # run, so it goes on the run's summary page rather than being buried
+        # three thousand lines into a log.
+        run: |
+          {
+            echo '## xDAWG history'
+            echo '```'
+            sed -n '/YEAR-OVER-YEAR STABILITY/,$p' history.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: history-output
+          path: |
+            history.log
+            site/data/history.js
+          retention-days: 30
+
+      - name: Commit history.js
+        if: ${{ inputs.commit && success() }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # history.html too: write_history stamps its script tag with the
+          # build timestamp, and without that stamp a browser keeps serving
+          # the previously cached history.js.
+          if git diff --quiet -- site/data/history.js site/history.html; then
+            echo "history unchanged; nothing to commit."
+            exit 0
+          fi
+          git add site/data/history.js site/history.html
+          git commit -m "History ${{ inputs.seasons }} (run ${{ github.run_number }})"
+          git push
