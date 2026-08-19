@@ -256,11 +256,14 @@ def run(
 
     # ---------------- hitters ----------------
     print("[xdawg] hitter pillars")
+    # Loaded once: it feeds hustle_ratio AND the speed-group baseline that
+    # keeps extra_bases_taken from being a footrace.
+    sprint = ingest.load_sprint_speed(season)
     h_frames = [
         H.bite(p),
         H.post_k_bounceback(p),
-        H.grit(ingest.load_sprint_speed(season), H.hbp_frame(p),
-               H.xbt_frame(p), H.availability_frame(p)),
+        H.grit(sprint, H.hbp_frame(p),
+               H.xbt_frame(p, sprint), H.availability_frame(p)),
         H.hunt(ingest.load_oaa(season), _fielding_context(p, season)),
         H.clutch_frame(p),
         _attach_fight(p, "batter", season),
@@ -328,7 +331,12 @@ def _score_both(df: pd.DataFrame, role: str) -> pd.DataFrame:
     """
     league = compute(aggregate_league_view(df, role), role,
                      rate_name="DAWG+", count_name="DAWG")
-    selfref = compute(df, role, rate_name="wDAWG+", count_name="wDAWG")
+    # self_only: the wDAWG family counts ONLY components that have a
+    # self-referenced reading. Absolute-level measures -- hustle, HBP,
+    # baserunning, availability, OAA -- stay in DAWG+ where "how good is he"
+    # belongs, and leave wDAWG+ so it means strictly what its label says.
+    selfref = compute(df, role, rate_name="wDAWG+", count_name="wDAWG",
+                      self_only=True)
 
     # The per-component detail from the self-referenced pass is carried
     # through too, under `_cw_` instead of `_c_`. Without it the breakdown

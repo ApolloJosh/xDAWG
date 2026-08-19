@@ -34,19 +34,37 @@ def shrink(z: pd.Series, n: pd.Series, k: float) -> pd.Series:
 
 
 def score_pillar(
-    df: pd.DataFrame, role: str, pillar: str
+    df: pd.DataFrame, role: str, pillar: str, self_only: bool = False
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Roll a pillar's components into one shrunk, standardized score.
 
     Components absent from `df` are skipped and the remaining weights are
     renormalized, so a missing Savant leaderboard degrades the metric
     gracefully instead of crashing the run.
+
+    `self_only` drops every component that has no self-referenced version --
+    the ones measured on absolute level, which ship one number and no
+    `<name>__lg` twin because there is no split to take. Those are exactly
+    right for DAWG+, which is supposed to include how good you are, and
+    wrong for wDAWG+, which claims to measure only how much you beat your
+    OWN baseline when it mattered. They were 26% of a hitter's wDAWG+ and
+    25% of a pitcher's, identical in both stats.
+
+    That mattered most for the players the two numbers disagree about. A
+    hitter with no real clutch CHANGE has his self-referenced deltas sit
+    near zero however great he is -- so that leftover quarter decided his
+    whole wDAWG+, and for a slugger who is slow and does not field, wDAWG+
+    stopped being "does he rise to the moment" and became a baserunning and
+    availability score. Dropping them and renormalizing makes the two stats
+    genuinely different questions instead of 26% the same one.
     """
     spec = COMPONENTS[role][pillar]
     parts, weights, detail = [], [], {}
 
     for name, cfg in spec.items():
         if name not in df.columns:
+            continue
+        if self_only and f"{name}{LEAGUE_SUFFIX}" not in df.columns:
             continue
         raw = pd.to_numeric(df[name], errors="coerce")
         if raw.notna().sum() < 2:
@@ -99,6 +117,7 @@ def compute(
     role: str,
     rate_name: str = "DAWG+",
     count_name: str = "DAWG",
+    self_only: bool = False,
 ) -> pd.DataFrame:
     """Full pipeline: components -> pillars -> a rate stat and a counting stat.
 
@@ -109,7 +128,7 @@ def compute(
     pillar_scores, details = {}, {}
 
     for pillar in ("bite", "grit", "hunt", "fight"):
-        score, detail = score_pillar(df, role, pillar)
+        score, detail = score_pillar(df, role, pillar, self_only=self_only)
         pillar_scores[pillar] = score
         out[pillar.upper()] = score
         for c in detail.columns:

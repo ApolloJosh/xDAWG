@@ -93,8 +93,19 @@ COMPONENTS = {
             # build the two correlated at r = 0.994 -- one number drawing
             # two weights. The situational version carries the pillar
             # because when the plays happened is the whole point.
-            "oaa_situational":    {"weight": 0.65, "invert": False, "k": 40},
-            "oaa_rate":           {"weight": 0.00, "invert": False, "k": 40},
+            # k is in FIELDING CHANCES, and it was doing almost nothing at
+            # 40: a full-time defender takes 300-450 chances a season, so
+            # k=40 trusted him at 90% and a part-time one -- a DH who spells
+            # somebody at first twice a week, sixty chances -- at 60%. That
+            # is not "scaled by how much he actually fielded," it is a rounding
+            # error, and it is why a bat-first slugger carried a real negative
+            # defensive z into a metric that is not supposed to be about
+            # gloves. At 150 the full-timer keeps ~70% of his defensive
+            # signal and the occasional fielder under 30%, which is the
+            # intended shape: grade a man on his glove in proportion to how
+            # often he actually uses it.
+            "oaa_situational":    {"weight": 0.65, "invert": False, "k": 150},
+            "oaa_rate":           {"weight": 0.00, "invert": False, "k": 150},
             # Win probability added against the player's own context-neutral
             # rate -- FanGraphs' Clutch, computed in-house. This is what
             # makes hitter HUNT mean "the hit that wins it" and not just
