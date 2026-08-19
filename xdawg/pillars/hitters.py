@@ -434,8 +434,50 @@ def hbp_frame(p: pd.DataFrame) -> pd.DataFrame:
 _XBT_EVENTS = ("single", "double")
 
 
-def xbt_frame(p: pd.DataFrame) -> pd.DataFrame:
-    """Extra bases taken on hits, against the league's own baseline.
+def _speed_buckets(sprint: pd.DataFrame | None) -> pd.Series:
+    """Runners split into five speed groups, for a fair XBT expectation.
+
+    Returns a Series indexed by batter id, empty when sprint speed is
+    unavailable -- in which case the caller falls back to a league-wide
+    expectation and the component degrades to exactly what it was before.
+    """
+    if sprint is None or sprint.empty:
+        return pd.Series(dtype="float64")
+    if not {"batter", "sprint_speed"}.issubset(sprint.columns):
+        return pd.Series(dtype="float64")
+    s = sprint[["batter", "sprint_speed"]].dropna()
+    if len(s) < 25:
+        return pd.Series(dtype="float64")
+    try:
+        b = pd.qcut(s["sprint_speed"], 5, labels=False, duplicates="drop")
+    except ValueError:
+        return pd.Series(dtype="float64")
+    return pd.Series(pd.to_numeric(b, errors="coerce").to_numpy(dtype="float64"),
+                     index=s["batter"].astype("int64").to_numpy())
+
+
+# Below this many chances a (base, event, speed) cell is too thin to be its
+# own baseline, and the runners in it are measured against the whole league
+# instead. Without the guard a sparse cell defines its own mean and everyone
+# inside it scores exactly average by construction.
+_XBT_MIN_CELL = 150
+
+
+def xbt_frame(p: pd.DataFrame, sprint: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Extra bases taken on hits, against the baseline for runners LIKE HIM.
+
+    The expectation is per (starting base, hit type, SPEED GROUP), not per
+    (starting base, hit type). Without the speed term this component was
+    substantially a footrace: a slow slugger scored badly for not going
+    first-to-third on a single, which says nothing about whether he ran hard
+    and everything about how fast he is.
+
+    `hustle_ratio` has always got this right -- it reads home-to-first time
+    as a fraction of the player's OWN top sprint speed, so effort and speed
+    are separated by construction. This brings baserunning into line with
+    it. The question becomes whether he takes the extra base more often than
+    other runners of his speed do, which is a question about reads and
+    aggression rather than about wheels.
 
     Statcast's `on_1b`/`on_2b`/`on_3b` carry runner IDs, so consecutive
     plate appearances in a game reveal where every runner ended up without
@@ -517,11 +559,28 @@ def xbt_frame(p: pd.DataFrame) -> pd.DataFrame:
                                      "extra_bases_taken__n"])
     d = pd.concat(rows, ignore_index=True)
 
-    # Expectation learned from the league for the same situation, so this
-    # measures aggression and reads, not how often he happened to be on base
-    # when someone doubled.
-    exp = d.groupby(["start", "event"])["advance"].transform("mean")
-    d["excess"] = d["advance"] - exp
+    # Expectation learned from the league for the same situation AND the
+    # same class of runner, so this measures aggression and reads rather
+    # than how often he happened to be on base when someone doubled, or how
+    # fast he is.
+    buckets = _speed_buckets(sprint)
+    d["_spd"] = d["batter"].map(buckets) if len(buckets) else np.nan
+
+    wide = d.groupby(["start", "event"])["advance"].transform("mean")
+    if d["_spd"].notna().any():
+        grp = d.groupby(["start", "event", "_spd"])["advance"]
+        narrow, cell_n = grp.transform("mean"), grp.transform("size")
+        # A runner with no sprint-speed row, or one sitting in a cell too
+        # thin to trust, falls back to the league-wide expectation.
+        use = d["_spd"].notna() & (cell_n >= _XBT_MIN_CELL)
+        exp = np.where(use.to_numpy(), narrow.to_numpy(), wide.to_numpy())
+    else:
+        warnings.warn(
+            "no sprint speed for the XBT baseline; extra_bases_taken is "
+            "unadjusted for runner speed and will penalize slow players"
+        )
+        exp = wide.to_numpy()
+    d["excess"] = d["advance"].to_numpy() - exp
 
     g = d.groupby("batter").agg(
         extra_bases_taken=("excess", "mean"), n=("excess", "size")
