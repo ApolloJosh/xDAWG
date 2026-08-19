@@ -249,8 +249,16 @@ def inherited_runners(p: pd.DataFrame) -> pd.DataFrame:
     with runners already aboard.
     """
     d = p.sort_values(["game_pk", "pitcher", "at_bat_number", "pitch_number"])
-    first = d.groupby(["game_pk", "pitcher"]).first().reset_index()
-    first["_inherited"] = first[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1)
+    # drop_duplicates, NOT groupby().first(): pandas' .first() returns the
+    # first NON-NULL value in each column independently, so a starter who
+    # entered with bases empty picked up whichever runners appeared later in
+    # his outing and was credited with inheriting them. That made every
+    # starter score on a reliever-only component -- Michael Wacha, who has
+    # started every game, was showing +0.55 here.
+    first = d.drop_duplicates(["game_pk", "pitcher"], keep="first")
+    first = first.assign(
+        _inherited=first[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1)
+    )
 
     pa = d.groupby(["pitcher", "game_pk", "at_bat_number"]).agg(
         rv=("delta_run_exp", "sum")

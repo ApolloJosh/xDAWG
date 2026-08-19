@@ -449,13 +449,25 @@ def xbt_frame(p: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["batter", "extra_bases_taken",
                                      "extra_bases_taken__n"])
 
-    pa = (
-        p.groupby(["game_pk", "at_bat_number"], sort=True)
-        .agg(on_1b=("on_1b", "first"), on_2b=("on_2b", "first"),
-             on_3b=("on_3b", "first"), events=("events", "last"))
-        .reset_index()
-        .sort_values(["game_pk", "at_bat_number"])
+    # Base state at the START of the plate appearance. Taken from the first
+    # ROW rather than via agg("first"), which returns the first non-null
+    # value per column and would report a runner who only reached second on
+    # a steal mid-at-bat as having started there.
+    order = ["game_pk", "at_bat_number", "pitch_number"]
+    order = [c for c in order if c in p.columns]
+    starts = (
+        p.sort_values(order)
+        .drop_duplicates(["game_pk", "at_bat_number"], keep="first")
+        [["game_pk", "at_bat_number", "on_1b", "on_2b", "on_3b"]]
     )
+    # `events` is null on every pitch that does not end the PA, so "last"
+    # (last non-null) is genuinely what we want for that one.
+    ends = (
+        p.groupby(["game_pk", "at_bat_number"], sort=True)
+        .agg(events=("events", "last")).reset_index()
+    )
+    pa = starts.merge(ends, on=["game_pk", "at_bat_number"], how="left") \
+               .sort_values(["game_pk", "at_bat_number"])
     if pa.empty:
         return pd.DataFrame(columns=["batter", "extra_bases_taken",
                                      "extra_bases_taken__n"])
