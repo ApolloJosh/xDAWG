@@ -1,0 +1,140 @@
+name: Build real data
+
+# The full-season run: ~500k pitches, 30-60 minutes. Writes site/data/data.js
+# and (by default) commits it to main, then explicitly dispatches the Pages
+# deploy. The dispatch is not optional: a push made with GITHUB_TOKEN does not
+# trigger `on: push` workflows, so the commit alone leaves the file correct on
+# main and the live site serving the previous build.
+#
+# ALWAYS run "Smoke test ingestion" first. If Savant has renamed a column you
+# want to find out in two minutes, not forty-five.
+#
+# Trigger: Actions tab -> Build real data -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: Season to build
+        required: false
+        default: "2026"
+      refresh:
+        description: Ignore the cached Statcast pull and re-fetch from Savant
+        type: boolean
+        required: false
+        default: false
+      commit:
+        description: Commit data.js to main (this deploys the site)
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+  # For the "Deploy the site" step. See the header comment.
+  actions: write
+
+concurrency:
+  group: xdawg-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Record dependency versions
+        run: pip freeze | grep -iE "pandas|numpy|pyarrow|pybaseball|requests" || true
+
+      - name: Run tests
+        # Cheap, and it exercises the whole scoring path offline against
+        # synthetic Statcast with realistic nulls. Runs BEFORE the pull so a
+        # crash costs five seconds instead of forty-five minutes.
+        run: |
+          pip install pytest
+          python -m pytest tests/ -q
+
+      - name: Restore Statcast cache
+        # The expensive part is the Savant pull, not the scoring. Caching the
+        # Parquet means a rerun after a code fix takes minutes instead of an
+        # hour. Tick `refresh` to bypass it.
+        if: ${{ !inputs.refresh }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xdawg_cache
+          key: statcast-${{ inputs.season }}-${{ github.run_id }}
+          restore-keys: |
+            statcast-${{ inputs.season }}-
+
+      - name: Build
+        env:
+          PYTHONWARNINGS: always
+          XDAWG_CACHE: ${{ runner.temp }}/xdawg_cache
+        run: |
+          set -o pipefail
+          python -u -m xdawg build \
+            --season "${{ inputs.season }}" \
+            ${{ inputs.refresh && '--refresh' || '' }} 2>&1 | tee build.log
+
+      - name: Verify the leaderboard
+        # Fails the run on the things that would silently produce a wrong
+        # leaderboard: synthetic data, a degenerate pillar, components that
+        # dropped out. See docs/SPEC.md and the handoff's verify list.
+        run: python -u scripts/verify_build.py site/data/data.js | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-output
+          path: |
+            build.log
+            site/data/data.js
+          retention-days: 30
+
+      - name: Commit data.js
+        id: commit
+        if: ${{ inputs.commit && success() }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # index.html too: write_site_data stamps its data.js script tag
+          # with the build timestamp, and without that stamp a browser keeps
+          # serving the previously cached data.js and the site looks like it
+          # never deployed.
+          # --porcelain rather than `git diff --quiet`: diff reports nothing
+          # for an untracked path, so the first build of any new output file
+          # would report "nothing to commit" and throw the run away.
+          # awards.js and awards.html too: `build` now writes the Day/Week/
+          # Month awards in the same pass, and awards.html carries their
+          # cache-buster stamp exactly as index.html carries data.js's.
+          PATHS="site/data/data.js site/data/awards.js site/index.html site/awards.html"
+          if [ -z "$(git status --porcelain -- $PATHS)" ]; then
+            echo "site unchanged; nothing to commit."
+            exit 0
+          fi
+          git add $PATHS
+          git commit -m "Real ${{ inputs.season }} data (run ${{ github.run_number }})"
+          git push
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the site
+        # pages.yml listens on `on: push`, and a GITHUB_TOKEN push does not
+        # fire that. Ask it directly, or the build lands on main and the live
+        # site keeps showing the last thing a human pushed by hand.
+        if: ${{ steps.commit.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref "${{ github.ref_name }}"

@@ -233,6 +233,45 @@ cache; otherwise a rerun after a code fix takes minutes, not another hour.
 Running locally still works if you're on a machine with a normal network
 route — `python -m xdawg smoke --season 2026`, then `build`. Same order.
 
+## Awards — Day, Week, Month
+
+`xdawg/awards.py`, written by the ordinary `build` (not a separate command,
+because they need the same pitch frame and a Day award refreshing on a
+different schedule from the leaderboard would drift out of agreement with
+it). Output is `site/data/awards.js`, page is `site/awards.html`.
+
+Weeks are Monday–Sunday. Months are calendar months.
+
+**They are not decided by DAWG+.** A day is about four plate appearances and
+every pillar is a rate against a baseline; at four trips those rates are
+noise, and a confident DAWG+ for one day would be a lie with a straight face.
+The award is decided by contribution:
+
+    score = sum over the window of ( WPA x FIGHT weight )
+
+WPA is already leverage-aware by construction, the FIGHT weight asks who it
+was against, and it is summed rather than averaged so four good trips beat
+one. Eligibility floors — 2 / 8 / 30 trips — stop a one-swing cameo winning.
+
+The four pillars are still computed over the window and shown underneath,
+using `score_pillar(..., raw=True)`. That flag skips the final z-score, which
+otherwise re-standardizes a pillar to sd 1 no matter how little evidence built
+it — so a single day would print bars as confident as a full season's. Raw,
+they collapse to ~0.01 for a day and wake up to ~0.25 by a month, and the page
+says why. The season leaderboard never asks for raw and is unchanged.
+
+Payload size is the one thing to watch. A full ranked board for all 150 days
+came to 2.7 MB; only the CURRENT window keeps every player, and past windows
+keep each club's best plus the overall top five — enough for the team and
+league filters to work all the way back, at 680 KB.
+
+**Freshness.** `.github/workflows/nightly.yml` rebuilds and deploys at 11:00
+UTC daily, with `--refresh` so it actually reaches for last night's games (the
+cached parquet would otherwise be served verbatim and the job would rebuild
+yesterday's numbers forever). The page also computes its own staleness from
+`through` and prints a banner when the data is two or more days old — an award
+called "of the Day" that is quietly a week old is worse than no award.
+
 ## Past seasons
 
 `python -m xdawg history --seasons 2023 2024 2025 2026`, or **Actions tab →
