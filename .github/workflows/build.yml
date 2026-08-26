@@ -1,7 +1,10 @@
 name: Build real data
 
 # The full-season run: ~500k pitches, 30-60 minutes. Writes site/data/data.js
-# and (by default) commits it to main, which in turn fires the Pages deploy.
+# and (by default) commits it to main, then explicitly dispatches the Pages
+# deploy. The dispatch is not optional: a push made with GITHUB_TOKEN does not
+# trigger `on: push` workflows, so the commit alone leaves the file correct on
+# main and the live site serving the previous build.
 #
 # ALWAYS run "Smoke test ingestion" first. If Savant has renamed a column you
 # want to find out in two minutes, not forty-five.
@@ -28,6 +31,8 @@ on:
 
 permissions:
   contents: write
+  # For the "Deploy the site" step. See the header comment.
+  actions: write
 
 concurrency:
   group: xdawg-build
@@ -100,6 +105,7 @@ jobs:
           retention-days: 30
 
       - name: Commit data.js
+        id: commit
         if: ${{ inputs.commit && success() }}
         run: |
           git config user.name  "github-actions[bot]"
@@ -108,10 +114,27 @@ jobs:
           # with the build timestamp, and without that stamp a browser keeps
           # serving the previously cached data.js and the site looks like it
           # never deployed.
-          if git diff --quiet -- site/data/data.js site/index.html; then
+          # --porcelain rather than `git diff --quiet`: diff reports nothing
+          # for an untracked path, so the first build of any new output file
+          # would report "nothing to commit" and throw the run away.
+          # awards.js and awards.html too: `build` now writes the Day/Week/
+          # Month awards in the same pass, and awards.html carries their
+          # cache-buster stamp exactly as index.html carries data.js's.
+          PATHS="site/data/data.js site/data/awards.js site/index.html site/awards.html"
+          if [ -z "$(git status --porcelain -- $PATHS)" ]; then
             echo "site unchanged; nothing to commit."
             exit 0
           fi
-          git add site/data/data.js site/index.html
+          git add $PATHS
           git commit -m "Real ${{ inputs.season }} data (run ${{ github.run_number }})"
           git push
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the site
+        # pages.yml listens on `on: push`, and a GITHUB_TOKEN push does not
+        # fire that. Ask it directly, or the build lands on main and the live
+        # site keeps showing the last thing a human pushed by hand.
+        if: ${{ steps.commit.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref "${{ github.ref_name }}"
