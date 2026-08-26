@@ -63,6 +63,29 @@ select{font-family:var(--body);font-size:14px;padding:5px 7px;border:2px solid v
 .meter .fill.neg{right:50%;background:var(--secondary)}
 .pnote{font-size:11px;color:var(--muted);padding:0 14px 12px;font-style:italic}
 .empty{padding:18px 14px;color:var(--muted);font-size:13px}
+.statline{display:flex;gap:0;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);margin:0 14px 12px}
+.statline div{flex:1;padding:7px 2px;text-align:center}
+.statline div+div{border-left:1px solid var(--hair)}
+.statline .k{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.statline .v{font-family:var(--display);font-size:21px;line-height:1.05;font-variant-numeric:tabular-nums}
+tbody tr.clickable{cursor:pointer}
+tbody tr.clickable:hover{background:var(--accent)}
+.more{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+dialog{border:3px solid var(--rule);padding:0;max-width:620px;width:calc(100% - 32px);background:#fff;color:var(--ink)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+.dlg-head{background:var(--ink);color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.dlg-head b{font-family:var(--display);font-size:21px;letter-spacing:.05em;text-transform:uppercase;font-weight:400}
+.dlg-head button{font:inherit;background:none;border:2px solid #fff;color:#fff;cursor:pointer;padding:1px 9px}
+.dlg-body{padding:4px 0 14px}
+.entry{padding:12px 14px 2px;border-top:1px solid var(--hair)}
+.entry:first-child{border-top:0}
+.entry .top{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+.entry .nm2{font-family:var(--display);font-size:22px;letter-spacing:.02em;text-transform:uppercase}
+.entry .sc{font-family:var(--display);font-size:22px;color:var(--primary)}
+.entry .meta2{font-size:12px;color:var(--muted);margin-bottom:6px}
+.entry .why2{font-size:13px;margin:8px 0 2px}
+.entry .statline{margin:0 0 10px}
+.dlg-note{padding:6px 14px 0;font-size:11px;color:var(--muted);font-style:italic}
 .runners{border-top:1px solid var(--hair);padding:8px 14px 12px;font-size:12px}
 .runners b{font-family:var(--display);letter-spacing:.04em;font-weight:400;font-size:12px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:3px}
 .runners div{display:flex;justify-content:space-between;gap:10px}
@@ -155,12 +178,18 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
   </div>
 </main>
 
+<dialog id="dlg">
+  <div class="dlg-head"><b id="dlg-title">Window</b>
+    <button id="dlg-close" type="button">Close</button></div>
+  <div class="dlg-body" id="dlg-body"></div>
+</dialog>
+
 <footer class="wrap">
   <div>xDAWG &mdash; not a talent metric. The awards are decided by win
     probability added times opponent quality, summed over the window.</div>
 </footer>
 
-<script src="data/awards.js?v=202608262028" onerror="window.__noaw=1"></script>
+<script src="data/awards.js" onerror="window.__noaw=1"></script>
 <script>
 (function(){
   var A = window.XDAWG_AWARDS;
@@ -273,6 +302,27 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     return '<div class="pillars">'+body+'</div><div class="pnote">'+note+'</div>';
   }
 
+  // Traditional line. Hitters and pitchers get different columns, and RA9
+  // is deliberately not called ERA: Statcast publishes runs but not the
+  // earned/unearned split, so this is every run that scored with him on the
+  // mound. Labelling it ERA would be claiming a number we cannot compute.
+  var COLS = {
+    hitter:  [["PA","PA"],["HR","HR"],["BB","BB"],["OPS","OPS"]],
+    pitcher: [["IP","IP"],["K","K"],["BB","BB"],["RA9","RA9"]]
+  };
+  function statLine(r){
+    var L = r.line;
+    if(!L) return "";
+    return '<div class="statline">' + COLS[r.role].map(function(c){
+      var v = L[c[0]];
+      if(v === null || v === undefined) v = "—";
+      else if(c[0] === "OPS") v = Number(v).toFixed(3).replace(/^0/, "");
+      else if(c[0] === "RA9") v = Number(v).toFixed(2);
+      else if(c[0] === "IP") v = Number(v).toFixed(1);
+      return '<div><div class="k">'+c[1]+'</div><div class="v">'+v+'</div></div>';
+    }).join("") + '</div>';
+  }
+
   function runnersUp(rows){
     if(rows.length < 2) return "";
     return '<div class="runners"><b>Also in the running</b>' +
@@ -287,12 +337,29 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
       var kind = k[0], key = A.latest[kind];
       var rows = key ? rowsFor(kind, key) : [];
       var head = '<div class="kind">'+k[1]+'<em>'+esc(key ? label(kind,key) : "")+'</em></div>';
+      var floor = key ? (((A.floors||{})[kind]||{})[key] || (A.min_pa||{})[kind]) : "";
       if(!rows.length){
-        return '<div class="award">'+head+'<div class="empty">Nobody from this '+
-          'selection cleared the '+(A.min_pa?A.min_pa[kind]:"")+
-          '-trip minimum in this window.</div></div>';
+        return '<div class="award">'+head+'<div class="empty">Nobody in this '+
+          'selection reached the '+floor+'-trip minimum for this window.</div></div>';
       }
       var w = rows[0];
+      // Nobody wins an award for helping his team lose. On a narrow filter --
+      // one club, one role, a window two days old -- the whole pool can be
+      // under water, and crowning the least-bad man reads as an endorsement.
+      if(w.score <= 0){
+        return '<div class="award">'+head+
+          '<div class="who"><div class="nm" style="color:var(--muted)">No dawg</div>'+
+          '<div class="meta">Nobody in this selection finished the window above '+
+          'zero — every eligible player cost his team more win probability than '+
+          'he added.</div></div>'+
+          '<div class="runners"><b>Closest to it</b>'+
+          rows.slice(0,3).map(function(r){
+            return '<div><span>'+esc(r.name)+' <span class="miss">'+esc(r.team)+
+              '</span></span><span>'+sgn(r.score)+'</span></div>';
+          }).join("")+'</div>'+
+          '<div class="pnote">'+rows.length+' eligible · '+floor+
+          ' trips required for this window.</div></div>';
+      }
       return '<div class="award">'+head+
         '<div class="who"><div class="nm">'+esc(w.name)+
           '<span class="tag '+(w.role==="hitter"?"h":"p")+'">'+
@@ -302,8 +369,11 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
           ' · '+sgn(w.wpa)+' win probability added</div></div>'+
         '<div class="score">'+sgn(w.score)+'</div>'+
         '<div class="scorelab">DAWG score — win probability added × opponent weight</div>'+
+        statLine(w)+
         (w.best ? '<div class="why">'+whyLine(w)+'</div>' : "")+
         runnersUp(rows)+
+        '<div class="pnote">'+rows.length+' eligible · '+floor+
+        ' trips required for this window.</div>'+
         pillarBlock(kind, w)+
       '</div>';
     }).join("");
@@ -318,7 +388,9 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
       var rows = rowsFor(kind, key);
       if(!rows.length) return;
       var w = rows[0];
-      out.push('<tr><td class="left">'+esc(label(kind,key))+'</td>'+
+      out.push('<tr class="clickable" data-key="'+esc(key)+'" tabindex="0">'+
+        '<td class="left">'+esc(label(kind,key))+
+        ' <span class="more">details</span></td>'+
         '<td class="left">'+esc(w.name)+'<span class="tag '+
           (w.role==="hitter"?"h":"p")+'">'+(w.role==="hitter"?"HIT":"PIT")+'</span></td>'+
         '<td>'+esc(w.team)+'</td><td>'+sgn(w.score)+'</td>'+
@@ -328,12 +400,57 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     document.getElementById("arch").innerHTML = out.join("") ||
       '<tr><td class="left miss" colspan="7">Nothing matches this selection.</td></tr>';
     document.getElementById("arch-sub").textContent =
-      "Every " + kind + "'s winner this season, newest first. Past windows keep "
-      + "each club's best man and the overall top five, so the filters work "
-      + "all the way back.";
+      "Every " + kind + "'s winner this season, newest first. Click any row for "
+      + "that window's podium, their PA / HR / BB / OPS or IP / K / BB / RA9, "
+      + "and the moment that decided it.";
   }
 
   function render(){ renderAwards(); renderArchive(); }
+
+  // Window detail. Shows the podium for that window with each man's
+  // traditional line and the moment that decided his score, which is the
+  // whole point of being able to reach back three weeks.
+  var dlg = document.getElementById("dlg");
+  function openWindow(kind, key){
+    var rows = rowsFor(kind, key);
+    document.getElementById("dlg-title").textContent = label(kind, key);
+    var floor = ((A.floors||{})[kind]||{})[key] || (A.min_pa||{})[kind];
+    if(!rows.length){
+      document.getElementById("dlg-body").innerHTML =
+        '<div class="entry"><div class="meta2">Nobody in this selection reached '+
+        'the '+floor+'-trip minimum for this window.</div></div>';
+    } else {
+      document.getElementById("dlg-body").innerHTML = rows.slice(0,3).map(function(r,i){
+        return '<div class="entry">'+
+          '<div class="top"><span class="nm2">'+esc(r.name)+
+            '<span class="tag '+(r.role==="hitter"?"h":"p")+'">'+
+            (r.role==="hitter"?"HIT":"PIT")+'</span></span>'+
+            '<span class="sc">'+sgn(r.score)+'</span></div>'+
+          '<div class="meta2">'+(i===0?"Winner · ":"")+esc(r.team)+' · '+
+            r.n+' trip'+(r.n===1?"":"s")+' across '+r.games+
+            ' game'+(r.games===1?"":"s")+' · '+sgn(r.wpa)+' win probability added</div>'+
+          statLine(r)+
+          (r.best ? '<div class="why2">'+whyLine(r)+'</div>' : "")+
+        '</div>';
+      }).join("") +
+      '<div class="dlg-note">'+rows.length+' eligible · '+floor+
+        ' trips required · RA9 is all runs allowed, not earned runs — Statcast '+
+        'does not publish the split.</div>';
+    }
+    if(dlg.showModal) dlg.showModal(); else dlg.setAttribute("open","");
+  }
+  document.getElementById("dlg-close").addEventListener("click", function(){
+    if(dlg.close) dlg.close(); else dlg.removeAttribute("open");
+  });
+  document.getElementById("arch").addEventListener("click", function(e){
+    var tr = e.target.closest("tr.clickable");
+    if(tr) openWindow(S.tab, tr.getAttribute("data-key"));
+  });
+  document.getElementById("arch").addEventListener("keydown", function(e){
+    if(e.key !== "Enter" && e.key !== " ") return;
+    var tr = e.target.closest("tr.clickable");
+    if(tr){ e.preventDefault(); openWindow(S.tab, tr.getAttribute("data-key")); }
+  });
 
   document.getElementById("lgseg").addEventListener("click", function(e){
     var b = e.target.closest(".segbtn"); if(!b) return;

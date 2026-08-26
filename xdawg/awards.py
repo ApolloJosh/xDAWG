@@ -39,11 +39,48 @@ from . import fight as fight_mod
 from . import ingest
 from .config import PILLAR_WEIGHTS
 
-# Windows below this many plate appearances are not eligible to win. Without
-# it a September call-up with one pinch-hit homer in his only trip wins DAWG
-# of the Day over a man who did it four times, and the award stops meaning
-# anything the second anyone looks at it.
+# Trips needed to be eligible, for a COMPLETE window. Without a floor a
+# September call-up with one pinch-hit homer in his only trip wins DAWG of the
+# Day over a man who did it four times.
+#
+# These are prorated by how much of the window has actually been played -- see
+# `eligibility_floor`. A week that is two days old is not a week, and holding
+# a two-day week to a full week's bar threw out every reliever in the league
+# and handed the award to whichever starter happened to have made a start,
+# score irrelevant.
 MIN_PA = {"day": 2, "week": 8, "month": 30}
+
+# The floor never prorates below this. Two trips is the point of having a
+# floor at all: one swing is an anecdote.
+MIN_FLOOR = 2
+
+
+def window_span(key: str, kind: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """First and last calendar day of a window, inclusive."""
+    if kind == "day":
+        d = pd.Timestamp(key)
+        return d, d
+    if kind == "week":
+        a = pd.Timestamp(key)
+        return a, a + dt.timedelta(days=6)
+    a = pd.Timestamp(key + "-01")
+    return a, a + pd.offsets.MonthEnd(1)
+
+
+def eligibility_floor(kind: str, key: str, through: pd.Timestamp) -> int:
+    """Trips required to win THIS window, scaled to how much of it has happened.
+
+    A window still in progress has had less baseball played in it, so holding
+    it to the completed-window bar excludes exactly the players whose usage is
+    spread thin -- relievers, platoon bats -- and leaves whoever front-loaded
+    their workload. On the second day of a week that meant one starter versus
+    nobody, and the award went to him at a score of MINUS 0.668.
+    """
+    start, end = window_span(key, kind)
+    total = (end - start).days + 1
+    played = min(max((through - start).days + 1, 1), total)
+    scaled = int(round(MIN_PA[kind] * played / total))
+    return max(MIN_FLOOR, scaled)
 
 
 def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
@@ -81,6 +118,23 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
     pa["game_date"] = pd.to_datetime(pa["game_date"], errors="coerce")
     pa = pa.dropna(subset=["game_date"])
 
+    # Outs recorded and runs allowed, for the pitchers' innings and RA9. Both
+    # are reconstructed from half-inning bookkeeping rather than shipped by
+    # the feed, so they come from the one place that already does it
+    # carefully instead of being re-derived here.
+    try:
+        from .pillars.pitchers import half_inning_pas
+
+        hip = half_inning_pas(p)[["game_pk", "at_bat_number",
+                                  "outs_recorded", "runs"]]
+        pa = pa.merge(hip, on=["game_pk", "at_bat_number"], how="left")
+    except Exception as e:                                   # noqa: BLE001
+        import warnings
+        warnings.warn(f"innings and runs unavailable ({e}); pitcher lines "
+                      "will show strikeouts and walks only")
+        pa["outs_recorded"] = np.nan
+        pa["runs"] = np.nan
+
     batting_home = pa["inning_topbot"].astype(str).str.startswith("Bot")
     # Win probability from the BATTING team's side. delta_home_win_exp is
     # signed for the home club, so a road hitter's contribution is its
@@ -111,6 +165,12 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
     common = {
         "game_pk": pa["game_pk"], "at_bat_number": pa["at_bat_number"],
         "game_date": pa["game_date"],
+        "outs_recorded": pd.to_numeric(
+            pa.get("outs_recorded", pd.Series(np.nan, index=pa.index)),
+            errors="coerce").fillna(0.0),
+        "runs": pd.to_numeric(
+            pa.get("runs", pd.Series(np.nan, index=pa.index)),
+            errors="coerce").fillna(0.0),
         "inning": pa.get("inning", pd.Series(np.nan, index=pa.index)),
         "li": pd.to_numeric(pa.get("li", pd.Series(1.0, index=pa.index)),
                             errors="coerce").fillna(1.0),
@@ -128,6 +188,87 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
     out = pd.concat([hit, pit], ignore_index=True).dropna(subset=["player_id"])
     out["player_id"] = out["player_id"].astype("int64")
     out["score"] = out["wpa"] * out["fight_w"]
+    return out
+
+
+# Statcast `events` vocabulary, grouped the way the rule book groups it.
+_HITS = {"single", "double", "triple", "home_run"}
+_TB = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
+_WALKS = {"walk", "intent_walk", "intentional_walk"}
+_HBP = {"hit_by_pitch"}
+_SF = {"sac_fly", "sac_fly_double_play"}
+_SH = {"sac_bunt", "sac_bunt_double_play"}
+_CI = {"catcher_interf"}
+_K = {"strikeout", "strikeout_double_play"}
+
+
+def _stat_lines(pa: pd.DataFrame, key_col: str) -> dict:
+    """Traditional stat lines per (player, role, window).
+
+    Hitters get PA / HR / BB / OPS, pitchers IP / K / BB / RA9.
+
+    RA9, not ERA, and the distinction is not pedantry: Statcast publishes runs
+    but not the earned/unearned split, and recovering it properly means
+    replaying each inning as if the errors had not happened -- the official
+    "reconstructed inning" rule. So this is every run that scored while he was
+    on the mound. It runs a few tenths above ERA and it is labelled RA9
+    everywhere it appears rather than being passed off as ERA.
+
+    Runs are charged to whoever was pitching when they crossed, which also
+    differs from the official book: a reliever who lets an inherited runner
+    score has that run charged to the pitcher who put him on. Here the
+    reliever wears it. `inherited_runners` in the season metric measures that
+    job properly; this is a box score, not a ledger.
+    """
+    d = pa.copy()
+    ev = d["events"].astype(str).str.lower()
+    d["_h"] = ev.isin(_HITS).astype(float)
+    d["_tb"] = ev.map(_TB).fillna(0.0).astype(float)
+    d["_hr"] = ev.eq("home_run").astype(float)
+    d["_bb"] = ev.isin(_WALKS).astype(float)
+    d["_hbp"] = ev.isin(_HBP).astype(float)
+    d["_sf"] = ev.isin(_SF).astype(float)
+    d["_sh"] = ev.isin(_SH).astype(float)
+    d["_ci"] = ev.isin(_CI).astype(float)
+    d["_k"] = ev.isin(_K).astype(float)
+    # A plate appearance only counts once, on the pitch that ended it. Every
+    # row here is already one PA, but `events` is null on a PA that a caught
+    # stealing ended, so count rows rather than non-null events.
+    d["_pa"] = 1.0
+
+    g = d.groupby([key_col, "player_id", "role"]).agg(
+        pa=("_pa", "sum"), h=("_h", "sum"), tb=("_tb", "sum"), hr=("_hr", "sum"),
+        bb=("_bb", "sum"), hbp=("_hbp", "sum"), sf=("_sf", "sum"),
+        sh=("_sh", "sum"), ci=("_ci", "sum"), k=("_k", "sum"),
+        outs=("outs_recorded", "sum"), runs=("runs", "sum"),
+    ).reset_index()
+
+    ab = g["pa"] - g["bb"] - g["hbp"] - g["sf"] - g["sh"] - g["ci"]
+    on_base = g["pa"] - g["sh"] - g["ci"]          # the OBP denominator
+    obp = ((g["h"] + g["bb"] + g["hbp"]) / on_base.where(on_base > 0))
+    slg = (g["tb"] / ab.where(ab > 0))
+    ip = g["outs"] / 3.0
+    ra9 = (g["runs"] * 9.0 / ip.where(ip > 0))
+
+    out = {}
+    for i, r in g.iterrows():
+        if r["role"] == "hitter":
+            line = {
+                "PA": int(r["pa"]), "HR": int(r["hr"]), "BB": int(r["bb"]),
+                "OPS": (None if pd.isna(obp[i]) or pd.isna(slg[i])
+                        else round(float(obp[i] + slg[i]), 3)),
+                "AVG": (None if pd.isna(r["h"]) or ab[i] <= 0
+                        else round(float(r["h"] / ab[i]), 3)),
+                "H": int(r["h"]),
+            }
+        else:
+            line = {
+                "IP": (None if pd.isna(ip[i]) else round(float(ip[i]), 1)),
+                "K": int(r["k"]), "BB": int(r["bb"]),
+                "RA9": (None if pd.isna(ra9[i]) else round(float(ra9[i]), 2)),
+                "BF": int(r["pa"]), "R": int(r["runs"]),
+            }
+        out[(r[key_col], int(r["player_id"]), r["role"])] = line
     return out
 
 
@@ -154,7 +295,8 @@ def window_label(key: str, kind: str) -> str:
 
 
 def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
-             full_key: str | None = None) -> dict:
+             full_key: str | None = None,
+             through: pd.Timestamp | None = None) -> tuple[dict, dict]:
     """Rank every player inside every window of this kind.
 
     Returns {window_key: [ranked rows]}.
@@ -191,7 +333,10 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
                                 ("game_date", "inning", "events", "li", "wpa", "opp")})
     g = g.merge(best, on=["_w", "player_id", "role"], how="left")
 
-    g = g[g["n"] >= MIN_PA[kind]]
+    lines = _stat_lines(d, "_w")
+    through = through if through is not None else pa["game_date"].max()
+    floors = {k: eligibility_floor(kind, k, through) for k in g["_w"].unique()}
+    g = g[g["n"] >= g["_w"].map(floors)]
     g = g.sort_values(["_w", "score"], ascending=[True, False])
 
     out: dict[str, list] = {}
@@ -221,10 +366,14 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
                 "n": int(r["n"]),
                 "games": int(r["games"]),
             }
-            if full:
+            row["line"] = lines.get((key, pid, r["role"]))
+            # `best` is kept for the podium of EVERY window, not just the
+            # featured one: the archive popup explains the moment for a week
+            # three weeks back, and without this it would have nothing to
+            # explain. Rows past the third stay slim.
+            if full or rank <= 3:
                 ev = str(r.get("best_events", "") or "").replace("_", " ")
                 row.update({
-                    "division": div,
                     "rv": None if pd.isna(r["rv"]) else round(float(r["rv"]), 3),
                     "opp_w": round(float(r["opp_w"]), 3),
                     "best": {
@@ -242,7 +391,7 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
                 })
             rows.append(row)
         out[key] = rows
-    return out
+    return out, floors
 
 
 def _window_pillars(p: pd.DataFrame, season: int, start, end) -> dict:
@@ -302,10 +451,14 @@ def build_awards(p: pd.DataFrame, season: int, names: dict,
 
     # Which window is "current" has to be decided before ranking, because it
     # decides which board keeps its full roster.
+    through_ts = pa["game_date"].max()
     latest = {kind: max(pa["game_date"].map(lambda x: window_key(x, kind)))
               for kind in ("day", "week", "month")}
-    boards = {kind: _leaders(pa, kind, names, teams, full_key=latest[kind])
-              for kind in ("day", "week", "month")}
+    built = {kind: _leaders(pa, kind, names, teams, full_key=latest[kind],
+                            through=through_ts)
+             for kind in ("day", "week", "month")}
+    boards = {kind: b for kind, (b, _) in built.items()}
+    floors = {kind: f for kind, (_, f) in built.items()}
     latest = {kind: (k if k in boards[kind] else (max(boards[kind]) if boards[kind] else None))
               for kind, k in latest.items()}
 
@@ -337,6 +490,11 @@ def build_awards(p: pd.DataFrame, season: int, names: dict,
         "generated": pd.Timestamp.now("UTC").strftime("%Y-%m-%d %H:%M UTC"),
         "through": pa["game_date"].max().strftime("%Y-%m-%d"),
         "min_pa": MIN_PA,
+        # The floor ACTUALLY applied to each window, after prorating for how
+        # much of it had been played. The page quotes this rather than MIN_PA,
+        # because on an in-progress window they differ and the reader deserves
+        # the number that decided who was on the ballot.
+        "floors": floors,
         "pillar_weights": PILLAR_WEIGHTS,
         "latest": latest,
         "labels": {kind: {k: window_label(k, kind) for k in b}

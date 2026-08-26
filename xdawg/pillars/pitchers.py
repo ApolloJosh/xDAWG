@@ -304,6 +304,24 @@ def half_inning_pas(p: pd.DataFrame) -> pd.DataFrame:
     pa["outs_recorded"] = (
         grp["_outs"].shift(-1).fillna(3.0) - pa["_outs"]
     ).clip(lower=0)
+
+    # Runs that crossed during this plate appearance, for the traditional
+    # stat lines on the awards page. `post_bat_score` is exact when the feed
+    # carries it; without it the score at the START of the next batter is the
+    # same number for every plate appearance except the last of a half
+    # inning, where runs scoring on the final out are lost. Rare, and the
+    # fallback only applies to a cache written before the column was added.
+    bat = pd.to_numeric(pa.get("bat_score"), errors="coerce").to_numpy(
+        dtype="float64", na_value=np.nan) if "bat_score" in pa.columns else None
+    if bat is None:
+        pa["runs"] = np.nan
+    elif "post_bat_score" in pa.columns:
+        post = pd.to_numeric(pa["post_bat_score"], errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan)
+        pa["runs"] = np.clip(post - bat, 0, None)
+    else:
+        pa["_bat"] = bat
+        pa["runs"] = (grp["_bat"].shift(-1) - pa["_bat"]).clip(lower=0).fillna(0.0)
     # Reverse cumulative sum within the half inning. Reversing a Series keeps
     # its index labels, so the values realign on assignment.
     pa["rest_of_inning_rv"] = grp["rv"].transform(

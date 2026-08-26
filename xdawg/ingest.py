@@ -28,6 +28,10 @@ STATCAST_COLS = [
     "release_spin_rate", "release_extension", "delta_home_win_exp",
     "delta_run_exp", "inning", "inning_topbot", "outs_when_up",
     "on_1b", "on_2b", "on_3b", "bat_score", "fld_score",
+    # post_bat_score makes runs-per-plate-appearance exact for the
+    # awards stat lines. A cache written before it was added simply
+    # lacks it and the caller falls back to differencing bat_score.
+    "post_bat_score",
     "home_team", "away_team",
 ]
 

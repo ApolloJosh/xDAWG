@@ -251,7 +251,39 @@ The award is decided by contribution:
 
 WPA is already leverage-aware by construction, the FIGHT weight asks who it
 was against, and it is summed rather than averaged so four good trips beat
-one. Eligibility floors — 2 / 8 / 30 trips — stop a one-swing cameo winning.
+one. Eligibility floors — 2 / 8 / 30 trips for a COMPLETE window — stop a one-swing
+cameo winning. They are **prorated by how much of the window has actually been
+played**, never below a hard minimum of 2. This was not a nicety: on the
+Tuesday of a week, holding a two-day week to the eight-batter bar meant for a
+finished week threw out every reliever in the league and handed the award to
+whichever starter happened to have made a start. The live site crowned one at
+a score of **minus 0.668**, unopposed, with an empty runners-up list.
+
+**Traditional lines.** Every kept row carries a `line`: PA / HR / BB / OPS for
+hitters, IP / K / BB / RA9 for pitchers, computed from Statcast events by the
+rule book (a walk is a plate appearance but not an at-bat; a sacrifice fly
+leaves the on-base denominator alone but not the slugging one). Clicking any
+archive row opens that window's podium with each man's line and the moment
+that decided his score.
+
+It is **RA9, not ERA**, and the name is load-bearing: Statcast publishes runs
+but not the earned/unearned split, and recovering it properly means replaying
+each inning as if the errors had not happened — the official reconstructed-
+inning rule. RA9 runs a few tenths above ERA. If real ERA is ever wanted it has
+to come from StatsAPI's `byDateRange` splits, which is one call per window per
+group. Runs are also charged to whoever was on the mound when they crossed,
+so a reliever wears an inherited runner here where the official book charges
+the man who put him on.
+
+Payload is ~1.0 MB raw for a full season, ~107 KB gzipped — Pages serves it
+compressed, so the raw figure is not what anyone downloads. Lines have to stay
+on every kept row rather than just the podium, because the team filter can
+surface a club's best man from well down the overall board.
+
+The page also refuses to crown a negative score at all. On a narrow filter —
+one club, one role, a window two days old — the whole pool can be under water,
+and the least-bad man is not a dawg. It renders "No dawg" with the closest
+three instead.
 
 The four pillars are still computed over the window and shown underneath,
 using `score_pillar(..., raw=True)`. That flag skips the final z-score, which

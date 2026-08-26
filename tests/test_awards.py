@@ -35,6 +35,11 @@ def _game(game_pk, date, home="HOU", away="SEA", rows=None):
             "inning_topbot": topbot, "home_team": home, "away_team": away,
             "delta_home_win_exp": wpa, "inning": 9, "li": 2.0,
             "delta_run_exp": 0.5, "events": "single",
+            # `half_inning_pas` needs these to reconstruct innings pitched and
+            # runs allowed. Without them the pitcher line silently degrades to
+            # strikeouts and walks, which is correct behaviour but leaves the
+            # IP and RA9 arithmetic untested.
+            "outs_when_up": min(i - 1, 2), "bat_score": 0, "fld_score": 0,
         })
     return out
 
@@ -149,17 +154,92 @@ def test_a_one_trip_cameo_cannot_win_the_day():
     assert ids[0] in (HOME_HERO, ROAD_HERO)
 
 
+CLOSER = 500_010
+STARTER = 500_011
+
+
+def test_a_partial_week_does_not_use_a_full_weeks_bar():
+    """The Hader/Pecko bug, exactly as it appeared on the site.
+
+    A week runs Monday to Sunday. On the Tuesday, two of its seven days have
+    been played. A closer with one appearance behind him -- four batters, a
+    good one -- was held to the eight-batter bar meant for a finished week
+    and thrown off the ballot entirely, while a starter who happened to have
+    made his start cleared it on volume alone and won the award with a
+    NEGATIVE score, unopposed.
+    """
+    rows = []
+    # Both pitch the top half, so their side is the HOME club and their WPA
+    # is `delta_home_win_exp` as given (the batter's is its negative).
+    # Monday: the starter, 10 batters faced, and it goes badly.
+    rows += _game(11, "2026-08-24", rows=[
+        (600_000 + i, STARTER, "Top", -0.05) for i in range(10)
+    ])
+    # Tuesday: the closer, four batters, and he shuts the door.
+    rows += _game(12, "2026-08-25", rows=[
+        (600_100 + i, CLOSER, "Top", +0.06) for i in range(4)
+    ])
+    df = pd.DataFrame(rows)
+    aw = _build(df)
+
+    assert awards.window_key(pd.Timestamp("2026-08-25"), "week") == "2026-08-24"
+    week = aw["boards"]["week"]["2026-08-24"]
+    ids = [r["id"] for r in week]
+
+    assert CLOSER in ids, (
+        "a reliever with a normal two-days-into-the-week workload must be "
+        "eligible for a two-day-old week"
+    )
+    winner = week[0]
+    assert winner["id"] == CLOSER, (
+        f"the man who actually helped must win; got {winner['name']} at "
+        f"{winner['score']}"
+    )
+    assert winner["score"] > 0
+
+    # And the floor itself must have been prorated, not merely survived.
+    floor = aw["floors"]["week"]["2026-08-24"]
+    assert floor < awards.MIN_PA["week"], (
+        f"a 2-of-7-day week must lower the bar; still {floor}"
+    )
+    assert floor >= awards.MIN_FLOOR
+
+
+def test_a_finished_window_keeps_the_full_bar():
+    """Prorating must not quietly weaken a completed week or month."""
+    through = pd.Timestamp("2026-08-30")          # the Sunday
+    assert awards.eligibility_floor("week", "2026-08-24", through) == awards.MIN_PA["week"]
+    assert awards.eligibility_floor(
+        "month", "2026-08", pd.Timestamp("2026-08-31")) == awards.MIN_PA["month"]
+    # A day is always complete the moment it exists.
+    assert awards.eligibility_floor(
+        "day", "2026-08-25", pd.Timestamp("2026-08-25")) == awards.MIN_PA["day"]
+
+
+def test_the_floor_scales_with_how_much_has_been_played():
+    mon = pd.Timestamp("2026-08-24")
+    seq = [awards.eligibility_floor("week", "2026-08-24", mon + dt.timedelta(days=i))
+           for i in range(7)]
+    assert seq == sorted(seq), f"the bar must rise as the week fills in: {seq}"
+    assert seq[0] == awards.MIN_FLOOR, "day one of a week uses the hard minimum"
+    assert seq[-1] == awards.MIN_PA["week"]
+    # Never below the hard minimum, even on the first day of a long month.
+    assert awards.eligibility_floor(
+        "month", "2026-08", pd.Timestamp("2026-08-01")) == awards.MIN_FLOOR
+
+
 def test_windows_carry_their_own_labels():
     aw = _build(_frame())
     assert aw["labels"]["day"]["2026-06-15"] == "June 15, 2026"
 
-    # The week and month boards are legitimately empty here: two plate
-    # appearances is nowhere near the 8-trip weekly or 30-trip monthly floor,
-    # so those windows produce no winner and therefore no label. That the
-    # eligibility floors bite before the labeller is the point -- an award
-    # with nobody eligible must be absent, not blank.
-    assert aw["boards"]["week"] == {}, "a 2-PA fixture must not award a week"
-    assert aw["boards"]["month"] == {}, "or a month"
+    # A single-day fixture means every window is one day into itself, so the
+    # weekly and monthly floors prorate down to the hard minimum of two trips
+    # and both windows DO produce a winner. That is the intended behaviour --
+    # the alternative is what the site actually showed, a two-day-old week
+    # judged against a finished week's bar.
+    assert aw["boards"]["week"], "a one-day-old week should still have a board"
+    assert aw["floors"]["week"]["2026-06-15"] == awards.MIN_FLOOR
+    assert "–" in aw["labels"]["week"]["2026-06-15"], "a week label spans two dates"
     assert awards.window_label("2026-06-15", "week") == "June 15–21, 2026"
     assert awards.window_label("2026-06-29", "week") == "June 29–July 5, 2026"
     assert awards.window_label("2026-06", "month") == "June 2026"
@@ -181,7 +261,18 @@ def test_latest_window_keeps_the_full_board_and_past_ones_are_trimmed():
     newest = aw["boards"]["day"]["2026-06-15"]
     past = aw["boards"]["day"]["2026-06-08"]
     assert any("best" in r for r in newest), "the featured day needs its detail"
-    assert all("best" not in r for r in past), "past days must be trimmed"
+
+    # A past window keeps `best` for its podium only -- the archive popup has
+    # to explain the moment for a week three weeks back, but the fourth-place
+    # finisher's biggest swing is detail nobody opens.
+    assert all("best" in r for r in past if r["rank"] <= 3), (
+        "the podium of a past window must keep its moment"
+    )
+    assert all("best" not in r for r in past if r["rank"] > 3), (
+        "past windows past third place must stay trimmed"
+    )
+    # Every kept row carries a traditional line, featured or not.
+    assert all(r.get("line") for r in past + newest), "stat lines must be attached"
 
 
 def test_raw_pillars_collapse_on_a_short_window():
@@ -215,6 +306,62 @@ def test_raw_pillars_collapse_on_a_short_window():
     # depends on it.
     z = score_pillar(pd.DataFrame(cols), "hitter", "bite")[0]
     assert abs(z.std(ddof=0) - 1.0) < 1e-9
+
+
+def test_traditional_lines_are_computed_by_the_rule_book():
+    """PA / HR / BB / OPS for hitters, IP / K / BB / RA9 for pitchers.
+
+    OPS is the one with a denominator worth getting wrong: a walk is not an
+    at-bat but IS a plate appearance, and a sacrifice fly leaves the on-base
+    denominator alone while leaving the slugging one. This fixture gives one
+    hitter a homer, a single, a walk and a strikeout, so every term is
+    exercised and the answer is checkable by hand.
+    """
+    B = 500_020
+    rows = _game(21, "2026-07-06", rows=[
+        (B, 900_020, "Bot", +0.10),
+        (B, 900_020, "Bot", +0.05),
+        (B, 900_020, "Bot", +0.02),
+        (B, 900_020, "Bot", -0.03),
+    ])
+    for r, ev in zip(rows, ["home_run", "single", "walk", "strikeout"]):
+        r["events"] = ev
+    aw = _build(pd.DataFrame(rows))
+
+    day = {(r["id"], r["role"]): r for r in aw["boards"]["day"]["2026-07-06"]}
+    line = day[(B, "hitter")]["line"]
+
+    assert line["PA"] == 4 and line["HR"] == 1 and line["BB"] == 1
+    assert line["H"] == 2
+    # AB = 4 PA - 1 BB = 3. OBP = (2 H + 1 BB) / 4 = .750.
+    # SLG = (4 + 1) total bases / 3 AB = 1.667. OPS = 2.417.
+    assert line["AVG"] == round(2 / 3, 3)
+    assert abs(line["OPS"] - (3 / 4 + 5 / 3)) < 0.001, line["OPS"]
+
+    # Outs run 0, 1, 2, 2 across the four batters and the half inning is
+    # closed out at three, so exactly one inning was recorded and nobody
+    # scored: 1.0 IP, RA9 of zero rather than a null.
+    pline = day[(900_020, "pitcher")]["line"]
+    assert pline["BF"] == 4 and pline["K"] == 1 and pline["BB"] == 1
+    assert pline["IP"] == 1.0, pline
+    assert pline["R"] == 0 and pline["RA9"] == 0.0, pline
+
+
+def test_ra9_is_not_labelled_era():
+    """Statcast has no earned/unearned split, so calling this ERA would lie.
+
+    Guarding the key name because the temptation to rename it for the sake of
+    a familiar column header is exactly how a metric quietly starts claiming
+    something it cannot compute.
+    """
+    B = 500_030
+    rows = _game(31, "2026-07-06", rows=[
+        (B, 900_030, "Bot", -0.10) for _ in range(4)
+    ])
+    aw = _build(pd.DataFrame(rows))
+    line = [r for r in aw["boards"]["day"]["2026-07-06"]
+            if r["role"] == "pitcher"][0]["line"]
+    assert "RA9" in line and "ERA" not in line
 
 
 if __name__ == "__main__":
