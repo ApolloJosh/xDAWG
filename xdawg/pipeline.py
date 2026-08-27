@@ -216,6 +216,7 @@ def _fielding_context(p: pd.DataFrame, season: int) -> pd.DataFrame:
 def run(
     season: int = SEASON_DEFAULT,
     refresh: bool = False,
+    topup: bool = False,
     start: str | None = None,
     end: str | None = None,
     min_pa: int | None = None,
@@ -226,7 +227,8 @@ def run(
     min_bf = QUALIFY["pitcher_min_bf"] if min_bf is None else min_bf
 
     print(f"[xdawg] loading statcast {season} (first run is slow, then cached)")
-    p = ingest.load_statcast(season, refresh=refresh, start=start, end=end)
+    p = ingest.load_statcast(season, refresh=refresh, topup=topup,
+                             start=start, end=end)
     print(f"[xdawg] {len(p):,} pitches")
     if p.empty:
         raise SystemExit("[xdawg] no pitches returned - check the season/date range")

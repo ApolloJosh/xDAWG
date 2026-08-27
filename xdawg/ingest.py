@@ -111,34 +111,7 @@ def season_dates(season: int) -> tuple[str, str]:
     return start, min(end, today)
 
 
-def load_statcast(
-    season: int,
-    refresh: bool = False,
-    start: str | None = None,
-    end: str | None = None,
-) -> pd.DataFrame:
-    """Pull pitch-level Statcast, cached to Parquet.
-
-    The first full-season run is slow -- pybaseball chunks the request by
-    date and Savant rate-limits. Subsequent runs read from cache instantly.
-
-    Pass `start`/`end` to pull a narrow window instead; that variant caches
-    under its own key so a smoke test never clobbers the full-season pull.
-    """
-    default_start, default_end = season_dates(season)
-    start = start or default_start
-    end = end or default_end
-
-    tag = (f"statcast_{season}" if (start, end) == (default_start, default_end)
-           else f"statcast_{season}_{start}_{end}")
-    path = _cache_path(tag)
-    if path.exists() and not refresh:
-        return pd.read_parquet(path)
-
-    from pybaseball import statcast  # imported lazily: heavy, and optional
-
-    df = statcast(start_dt=start, end_dt=end, verbose=True)
-
+def _trim_columns(df: pd.DataFrame) -> pd.DataFrame:
     keep = [c for c in STATCAST_COLS if c in df.columns]
     missing = set(STATCAST_COLS) - set(keep)
     if missing:
@@ -151,9 +124,82 @@ def load_statcast(
             f"{sorted(set(FIELDER_COLS) - set(fielders))}; HUNT falls back to "
             "unweighted OAA"
         )
-    keep = keep + fielders
+    return df[keep + fielders].copy()
 
-    df = df[keep].copy()
+
+# One pitch, uniquely. Used to drop the overlap when a top-up re-pulls a day
+# the cache already holds.
+_PITCH_KEY = ["game_pk", "at_bat_number", "pitch_number"]
+
+
+def load_statcast(
+    season: int,
+    refresh: bool = False,
+    start: str | None = None,
+    end: str | None = None,
+    topup: bool = False,
+) -> pd.DataFrame:
+    """Pull pitch-level Statcast, cached to Parquet.
+
+    The first full-season run is slow -- pybaseball chunks the request by
+    date and Savant rate-limits. Subsequent runs read from cache instantly.
+
+    Pass `start`/`end` to pull a narrow window instead; that variant caches
+    under its own key so a smoke test never clobbers the full-season pull.
+
+    Three modes, and the difference matters most to the nightly job:
+
+      default   cache hit wins outright. Fast, and blind to last night.
+      refresh   ignore the cache and re-pull the whole season. Correct, and
+                forty minutes every single night for the sake of one day of
+                new games.
+      topup     keep the cache and pull only from the day before its last
+                game forward, then merge. Minutes, not an hour. The one-day
+                overlap is deliberate: a build that ran while games were
+                still in progress cached a partial final day, and re-pulling
+                it is what repairs that. Duplicate pitches are dropped on
+                (game, at-bat, pitch).
+    """
+    default_start, default_end = season_dates(season)
+    start = start or default_start
+    end = end or default_end
+
+    tag = (f"statcast_{season}" if (start, end) == (default_start, default_end)
+           else f"statcast_{season}_{start}_{end}")
+    path = _cache_path(tag)
+
+    if path.exists() and not refresh and not topup:
+        return pd.read_parquet(path)
+
+    from pybaseball import statcast  # imported lazily: heavy, and optional
+
+    cached = None
+    if topup and path.exists():
+        cached = pd.read_parquet(path)
+        last = pd.to_datetime(cached["game_date"], errors="coerce").max()
+        if pd.notna(last):
+            since = (last - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+            if since > end:
+                print(f"[xdawg] cache already runs to {last.date()}; nothing to top up")
+                return cached
+            print(f"[xdawg] topping up statcast from {since} to {end} "
+                  f"(cache holds {len(cached):,} pitches through {last.date()})")
+            start = since
+        else:
+            cached = None
+
+    df = _trim_columns(statcast(start_dt=start, end_dt=end, verbose=True))
+
+    if cached is not None and not df.empty:
+        before = len(cached)
+        have = [c for c in _PITCH_KEY if c in df.columns and c in cached.columns]
+        df = pd.concat([cached, df], ignore_index=True)
+        if have:
+            # keep="last" so the fresh pull wins on any pitch that appears in
+            # both -- that is the whole point of re-pulling the overlap day.
+            df = df.drop_duplicates(have, keep="last")
+        print(f"[xdawg] merged: {before:,} cached + new = {len(df):,} pitches")
+
     df.to_parquet(path, index=False)
     return df
 

@@ -18,6 +18,11 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="pull data, score everyone, write the site")
     b.add_argument("--season", type=int, default=SEASON_DEFAULT)
     b.add_argument("--refresh", action="store_true", help="ignore the local cache")
+    b.add_argument(
+        "--topup", action="store_true",
+        help="keep the cache and pull only the days since its last game. "
+             "This is what the nightly job wants: minutes instead of the "
+             "forty --refresh costs to re-pull a season for one new day.")
     b.add_argument("--site", default=str(SITE))
 
     s = sub.add_parser(
@@ -128,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     from .export import build_payload, write_awards, write_site_data
     from .pipeline import run
 
-    hit, pit = run(season=a.season, refresh=a.refresh)
+    hit, pit = run(season=a.season, refresh=a.refresh, topup=a.topup)
     from .ingest import load_standings
     payload = build_payload(hit, pit, season=a.season, synthetic=False,
                             standings=load_standings(a.season))
