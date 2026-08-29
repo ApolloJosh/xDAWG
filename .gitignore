@@ -1,0 +1,8 @@
+
+# Scratch: transport zips, macOS metadata, and the loose workflow copies
+# that existed only because Finder hides dot-folders. The real workflows
+# live in .github/workflows/ and git makes them reachable without duplicates.
+.DS_Store
+_to_delete/
+/*.yml
+/SPEC.md
