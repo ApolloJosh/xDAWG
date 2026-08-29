@@ -1,0 +1,104 @@
+name: Clips
+
+# Phase 0 of the social pipeline: prove the video chain on real games.
+#
+# Take the winners already sitting in site/data/awards.js, find each man's
+# best moment in MLB's own game feed, and pull down the clip. Nothing here
+# posts anywhere. The output is an artifact of .mp4 files and a table in the
+# run summary saying which hops worked and which did not, because the whole
+# point of a spike is to find out where the chain breaks before anything is
+# built on top of it.
+#
+# It runs here rather than locally because statsapi.mlb.com and
+# baseballsavant.mlb.com are both unreachable from the development sandbox.
+# A GitHub runner is the only environment that can see the whole chain.
+
+on:
+  workflow_dispatch:
+    inputs:
+      window:
+        description: day | week | month
+        required: false
+        default: day
+      key:
+        description: "Window key, e.g. 2026-08-28. Blank means the latest board."
+        required: false
+        default: ""
+      top:
+        description: How many winners to resolve
+        required: false
+        default: "5"
+      dry_run:
+        description: Resolve playIds but download nothing
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xdawg-clips
+  cancel-in-progress: true
+
+jobs:
+  clips:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # No requirements.txt install on purpose. xdawg.clips is stdlib only,
+      # and pandas takes longer to install than this whole job takes to run.
+      - name: Test the join logic
+        run: |
+          pip install pytest
+          python -m pytest tests/test_clips.py -q
+
+      - name: Resolve and download
+        id: run
+        run: |
+          set -o pipefail
+          python -u -m xdawg clips \
+            --window "${{ inputs.window }}" \
+            ${{ inputs.key && format('--key {0}', inputs.key) || '' }} \
+            --top "${{ inputs.top }}" \
+            --out clips \
+            --summary clips-summary.md \
+            ${{ inputs.dry_run == true && '--dry-run' || '' }} \
+            2>&1 | tee clips.log
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Clips — ${{ inputs.window }} ${{ inputs.key || '(latest)' }}"
+            echo
+            cat clips-summary.md 2>/dev/null || {
+              echo 'The run produced no table. Last 40 lines:'
+              echo '```'
+              tail -40 clips.log 2>/dev/null || echo '(no log)'
+              echo '```'
+            }
+            echo
+            echo '### Files'
+            echo '```'
+            ls -lh clips 2>/dev/null || echo '(no clips directory)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clips-${{ inputs.window }}-${{ inputs.key || 'latest' }}
+          path: |
+            clips/
+            clips.log
+            clips-summary.md
+          retention-days: 7
+          if-no-files-found: warn

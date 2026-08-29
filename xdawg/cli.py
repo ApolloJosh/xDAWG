@@ -53,6 +53,21 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("mock", help="regenerate placeholder data for the site")
     m.add_argument("--site", default=str(SITE))
 
+    c = sub.add_parser(
+        "clips",
+        help="resolve an award window's winners to MLB video of their moment",
+    )
+    c.add_argument("--window", choices=("day", "week", "month"), default="day")
+    c.add_argument("--key", default=None,
+                   help="window key, e.g. 2026-08-28. Default: the latest one.")
+    c.add_argument("--top", type=int, default=5)
+    c.add_argument("--awards", default=str(SITE / "data" / "awards.js"))
+    c.add_argument("--out", default="clips")
+    c.add_argument("--summary", default=None,
+                   help="also write the markdown report to this file")
+    c.add_argument("--dry-run", action="store_true",
+                   help="resolve playIds but download nothing")
+
     sub.add_parser("serve", help="serve the site on localhost:8000")
 
     a = ap.parse_args(argv)
@@ -94,6 +109,24 @@ def main(argv: list[str] | None = None) -> int:
         out = write_history(payload, a.site)
         print(f"\n[xdawg] wrote {out}")
         return 0
+
+    if a.cmd == "clips":
+        from .clips import build_clips, report
+
+        print(f"[xdawg] clips: {a.window} {a.key or '(latest)'} top {a.top}")
+        results = build_clips(a.awards, window=a.window, key=a.key, top=a.top,
+                              out_dir=a.out, fetch_video=not a.dry_run)
+        if not results:
+            print("[xdawg] that window has no board. Nothing to do.")
+            return 1
+        md = report(results)
+        print("\n" + md)
+        if a.summary:
+            Path(a.summary).write_text(md + "\n")
+        # Non-zero only if EVERY winner failed. A partial night is normal --
+        # Savant does not have video for every play, and a run that returns
+        # four of five clips is a success that should not page anybody.
+        return 0 if any(r.play_id for r in results) else 2
 
     if a.cmd == "probe":
         from .ingest import probe

@@ -349,6 +349,57 @@ one of them is a bug in this repo. The page also computes its own staleness from
 `through` and prints a banner when the data is two or more days old — an award
 called "of the Day" that is quietly a week old is worse than no award.
 
+## Social — video clips (Phase 0)
+
+The plan is channels that post the top five DAWGs of the Day and the MLB top
+five DAWGs of the Week, each with video of the winner's biggest moment. Josh
+is building the channels and the logos. **Josh's call on rights: assume
+native reposting and build for it** — clips get downloaded and uploaded to
+each platform rather than embedded from MLB. That is a deliberate accepted
+risk taken with open eyes; MLB enforces its video rights vigorously and a
+takedown or a channel strike is a live possibility, not a theoretical one.
+It is written here so that if it happens, nobody has to reconstruct whether
+it was a decision or an oversight. It was a decision.
+
+`python -m xdawg clips --window day --top 5`, or **Actions tab → "Clips"**.
+Nothing posts anywhere yet. The job downloads the clips and leaves them as a
+run artifact with a table of what resolved at each hop.
+
+The chain is four undocumented hops:
+
+    date              -> statsapi /schedule             -> gamePk
+    gamePk            -> statsapi /game/{pk}/feed/live  -> allPlays[]
+    the right play    -> playEvents[].playId            -> a GUID
+    the GUID          -> savant sporty-videos           -> an .mp4
+
+**None of it is reachable from the dev sandbox.** The container's egress
+proxy 403s both statsapi and Savant, which is why `clips.yml` exists and why
+`xdawg/clips.py` is split hard down the middle: four thin urlopen wrappers on
+top, every decision a pure function underneath, all of them tested from
+fixtures in `tests/test_clips.py`. A bug in the join has to be reproducible
+without a live game or it cannot be worked on here at all.
+
+The join deserves a note. The tempting key is Statcast's `at_bat_number`
+against StatsAPI's `atBatIndex` — but those are two systems numbering the
+same list, and the offset between them is an assumption, not a fact. The
+match is on what both sides observe identically instead: inning, half,
+player id, and event type (Statcast's `events` and StatsAPI's
+`result.eventType` share a vocabulary). `at_bat_number` only breaks a tie,
+and even then it tries several offsets and *reports which one worked* rather
+than trusting one. Once real runs confirm the offset is always 1, that can
+be tightened.
+
+`best` in the awards payload now carries `game_pk` and `at_bat_number`.
+Boards built before this change do not have them, so `resolve` falls back to
+finding the game from the date and the two club abbreviations — which is
+wrong on a doubleheader, and is exactly why the fields were added. Clips for
+old windows deserve more suspicion than clips for new ones.
+
+Two things to watch in the first real runs: whether `playId` is present on
+every play worth posting, and whether Savant serves a clip for every playId.
+Partial success is the expected steady state — the CLI exits non-zero only
+when *every* winner fails.
+
 ## Past seasons
 
 `python -m xdawg history --seasons 2023 2024 2025 2026`, or **Actions tab →

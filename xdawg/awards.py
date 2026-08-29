@@ -626,10 +626,15 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
 
     # The single biggest swing in the window, for the "why he won" line.
     best_idx = d.groupby(["_w", "player_id", "role"])["score"].idxmax()
-    best = d.loc[best_idx, ["_w", "player_id", "role", "game_date", "inning",
-                            "events", "li", "wpa", "opp"]]
-    best = best.rename(columns={c: f"best_{c}" for c in
-                                ("game_date", "inning", "events", "li", "wpa", "opp")})
+    # game_pk and at_bat_number ride along for the video pipeline, which has
+    # to find this exact play in MLB's own feed. Without them the clip job
+    # re-derives the game from the date and the two club abbreviations,
+    # which is one more thing that can be wrong -- and is wrong outright on
+    # a doubleheader.
+    _bcols = [c for c in ("game_date", "inning", "events", "li", "wpa", "opp",
+                          "game_pk", "at_bat_number") if c in d.columns]
+    best = d.loc[best_idx, ["_w", "player_id", "role", *_bcols]]
+    best = best.rename(columns={c: f"best_{c}" for c in _bcols})
     g = g.merge(best, on=["_w", "player_id", "role"], how="left")
 
     lines = _stat_lines(d, "_w")
@@ -698,6 +703,11 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
                         "wpa": (None if pd.isna(r.get("best_wpa"))
                                 else round(float(r["best_wpa"]), 4)),
                         "opp": str(r.get("best_opp", "") or ""),
+                        # Not for the reader -- for the clip job. See above.
+                        "game_pk": (None if pd.isna(r.get("best_game_pk"))
+                                    else int(r["best_game_pk"])),
+                        "at_bat_number": (None if pd.isna(r.get("best_at_bat_number"))
+                                          else int(r["best_at_bat_number"])),
                     },
                 })
             rows.append(row)
