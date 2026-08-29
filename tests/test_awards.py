@@ -40,6 +40,12 @@ def _game(game_pk, date, home="HOU", away="SEA", rows=None):
             # strikeouts and walks, which is correct behaviour but leaves the
             # IP and RA9 arithmetic untested.
             "outs_when_up": min(i - 1, 2), "bat_score": 0, "fld_score": 0,
+            # The process-credit path reads these. Without them it degrades
+            # to win probability alone, which would leave the award's other
+            # half untested from this file.
+            "description": "hit_into_play", "zone": 5, "strikes": 0,
+            "balls": 0, "stand": "R", "p_throws": "R", "plate_x": 0.0,
+            "launch_speed": None,
         })
     return out
 
