@@ -198,7 +198,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     probability added times opponent quality, summed over the window.</div>
 </footer>
 
-<script src="data/awards.js?v=202608292206" onerror="window.__noaw=1"></script>
+<script src="data/awards.js" onerror="window.__noaw=1"></script>
 <script>
 (function(){
   var A = window.XDAWG_AWARDS;
@@ -364,7 +364,11 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
       if(v === null || v === undefined) v = "—";
       else if(c[0] === "OPS") v = Number(v).toFixed(3).replace(/^0/, "");
       else if(c[0] === "RA9") v = Number(v).toFixed(2);
-      else if(c[0] === "IP") v = Number(v).toFixed(1);
+      // IP arrives already formatted as box-score notation ("6.1" is six and
+      // one third). Running it through a decimal formatter would turn 6.1
+      // back into 6.1 by luck and 7.2 into 7.2 by luck, then mangle the first
+      // one that needed rounding. Print it as given.
+      else if(c[0] === "IP") v = esc(v);
       return '<div><div class="k">'+c[1]+'</div><div class="v">'+v+'</div></div>';
     }).join("") + '</div>';
   }
