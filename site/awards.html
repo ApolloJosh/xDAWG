@@ -63,6 +63,15 @@ select{font-family:var(--body);font-size:14px;padding:5px 7px;border:2px solid v
 .meter .fill.neg{right:50%;background:var(--secondary)}
 .pnote{font-size:11px;color:var(--muted);padding:0 14px 12px;font-style:italic}
 .empty{padding:18px 14px;color:var(--muted);font-size:13px}
+.split{display:flex;gap:0;margin:0 14px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.split span{flex:1;text-align:center;padding:3px 0;border:1px solid var(--hair)}
+.split span+span{border-left:0}
+.credits{margin:0 14px 12px;font-size:12px}
+.credits b{font-family:var(--display);letter-spacing:.04em;font-weight:400;font-size:12px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:3px}
+.credits div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dotted var(--hair);padding:1px 0}
+.credits div.debit{color:var(--secondary)}
+.credits span:last-child{font-variant-numeric:tabular-nums}
+.entry .split,.entry .credits{margin-left:0;margin-right:0}
 .statline{display:flex;gap:0;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);margin:0 14px 12px}
 .statline div{flex:1;padding:7px 2px;text-align:center}
 .statline div+div{border-left:1px solid var(--hair)}
@@ -189,7 +198,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     probability added times opponent quality, summed over the window.</div>
 </footer>
 
-<script src="data/awards.js?v=202608292140" onerror="window.__noaw=1"></script>
+<script src="data/awards.js" onerror="window.__noaw=1"></script>
 <script>
 (function(){
   var A = window.XDAWG_AWARDS;
@@ -306,6 +315,43 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
   // is deliberately not called ERA: Statcast publishes runs but not the
   // earned/unearned split, so this is every run that scored with him on the
   // mound. Labelling it ERA would be claiming a number we cannot compute.
+  // Plain-English names for the process credits. The key order here is the
+  // order they read on the card.
+  var CREDIT_LABELS = {
+    survived_two_strikes: "reached after two strikes",
+    extra_pitch:          "pitches past the 5th",
+    two_strike_foul:      "two-strike foul-offs",
+    chase_contact:        "chased and made contact",
+    hard_hit:             "hard-hit balls",
+    hbp:                  "wore a pitch",
+    called_strike_three:  "took strike three",
+    jam_escaped:          "jams escaped",
+    zone_with_traffic:    "strikes with men on",
+    inside_same_hand:     "pitches inside, same hand",
+    first_pitch_strike:   "first-pitch strikes",
+    putaway:              "put-away strikeouts",
+    walk_allowed:         "walks allowed"
+  };
+  var DEBITS = {called_strike_three: 1, walk_allowed: 1};
+
+  function creditList(r){
+    var c = r.credits;
+    if(!c) return "";
+    var keys = Object.keys(CREDIT_LABELS).filter(function(k){ return c[k]; });
+    if(!keys.length) return "";
+    return '<div class="credits"><b>How he earned it</b>' + keys.map(function(k){
+      return '<div'+(DEBITS[k]?' class="debit"':'')+'><span>'+
+        esc(CREDIT_LABELS[k])+'</span><span>'+(DEBITS[k]?"\u2212":"")+c[k]+'</span></div>';
+    }).join("") + '</div>';
+  }
+
+  function splitLine(r){
+    if(r.wpa_pts === undefined || r.proc_pts === undefined) return "";
+    return '<div class="split">'+
+      '<span>'+sgn(r.wpa_pts,1)+' win probability</span>'+
+      '<span>'+sgn(r.proc_pts,1)+' process</span></div>';
+  }
+
   var COLS = {
     hitter:  [["PA","PA"],["HR","HR"],["BB","BB"],["OPS","OPS"]],
     pitcher: [["IP","IP"],["K","K"],["BB","BB"],["RA9","RA9"]]
@@ -328,7 +374,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     return '<div class="runners"><b>Also in the running</b>' +
       rows.slice(1,4).map(function(r){
         return '<div><span>'+esc(r.name)+' <span class="miss">'+esc(r.team)+
-          '</span></span><span>'+sgn(r.score)+'</span></div>';
+          '</span></span><span>'+sgn(r.score,1)+'</span></div>';
       }).join("") + '</div>';
   }
 
@@ -367,9 +413,12 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
           '<div class="meta">'+esc(w.team)+' · '+w.n+' trip'+(w.n===1?"":"s")+
           ' across '+w.games+' game'+(w.games===1?"":"s")+
           ' · '+sgn(w.wpa)+' win probability added</div></div>'+
-        '<div class="score">'+sgn(w.score)+'</div>'+
-        '<div class="scorelab">DAWG score — win probability added × opponent weight</div>'+
+        '<div class="score">'+sgn(w.score,1)+'</div>'+
+        '<div class="scorelab">DAWG points — win probability plus process, '+
+          'both weighted by leverage and opponent</div>'+
+        splitLine(w)+
         statLine(w)+
+        creditList(w)+
         (w.best ? '<div class="why">'+whyLine(w)+'</div>' : "")+
         runnersUp(rows)+
         '<div class="pnote">'+rows.length+' eligible · '+floor+
@@ -393,7 +442,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
         ' <span class="more">details</span></td>'+
         '<td class="left">'+esc(w.name)+'<span class="tag '+
           (w.role==="hitter"?"h":"p")+'">'+(w.role==="hitter"?"HIT":"PIT")+'</span></td>'+
-        '<td>'+esc(w.team)+'</td><td>'+sgn(w.score)+'</td>'+
+        '<td>'+esc(w.team)+'</td><td>'+sgn(w.score,1)+'</td>'+
         '<td class="hide">'+sgn(w.wpa)+'</td>'+
         '<td class="hide">'+w.n+'</td><td class="hide">'+w.games+'</td></tr>');
     });
@@ -425,11 +474,13 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
           '<div class="top"><span class="nm2">'+esc(r.name)+
             '<span class="tag '+(r.role==="hitter"?"h":"p")+'">'+
             (r.role==="hitter"?"HIT":"PIT")+'</span></span>'+
-            '<span class="sc">'+sgn(r.score)+'</span></div>'+
+            '<span class="sc">'+sgn(r.score,1)+'</span></div>'+
           '<div class="meta2">'+(i===0?"Winner · ":"")+esc(r.team)+' · '+
             r.n+' trip'+(r.n===1?"":"s")+' across '+r.games+
             ' game'+(r.games===1?"":"s")+' · '+sgn(r.wpa)+' win probability added</div>'+
+          splitLine(r)+
           statLine(r)+
+          creditList(r)+
           (r.best ? '<div class="why2">'+whyLine(r)+'</div>' : "")+
         '</div>';
       }).join("") +
