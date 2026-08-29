@@ -1,0 +1,147 @@
+name: Nightly refresh
+
+# The awards page is the reason this exists. A leaderboard that is a week
+# stale is merely out of date; a "DAWG of the Day" that is a week stale is
+# wrong, and wrong in a way nobody notices because it still looks like a
+# result. So the build runs on a schedule instead of when somebody remembers.
+#
+# Cheap because the Statcast cache carries over between runs: only the games
+# since the last pull have to come down, not the whole season again.
+#
+# 11:17 UTC is roughly 4am Pacific / 7am Eastern -- after the last west-coast
+# game has finished and Savant has ingested it, before anyone looks.
+#
+# :17 rather than :00 on purpose. GitHub runs scheduled workflows on a
+# best-effort queue and explicitly warns that they may be delayed, or dropped
+# entirely, during periods of high load -- and the top of the hour is the most
+# congested minute there is, because that is where almost everybody points
+# their cron. An odd minute is the cheapest thing you can do about it.
+
+on:
+  schedule:
+    - cron: "17 11 * * *"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: Season to refresh
+        required: false
+        default: "2026"
+
+permissions:
+  contents: write
+  # A GITHUB_TOKEN push cannot trigger `on: push` workflows, so pages.yml has
+  # to be dispatched explicitly at the end. See build.yml for the full story.
+  actions: write
+
+concurrency:
+  # Shares a group with the manual build: two full-season pulls writing the
+  # same data.js at the same time is the one way this can corrupt itself.
+  group: xdawg-build
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          pip install pytest
+          python -m pytest tests/ -q
+
+      - name: Restore Statcast cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xdawg_cache
+          # The key rotates every run so today's cache is always written; the
+          # restore-key prefix picks up yesterday's. Without the rotation the
+          # cache would be frozen at whatever the first run stored and every
+          # night would re-pull the entire season.
+          key: statcast-${{ inputs.season || '2026' }}-${{ github.run_id }}
+          restore-keys: |
+            statcast-${{ inputs.season || '2026' }}-
+
+      - name: Build
+        env:
+          PYTHONWARNINGS: always
+          XDAWG_CACHE: ${{ runner.temp }}/xdawg_cache
+        run: |
+          set -o pipefail
+          # --topup, not --refresh. Both reach last night's games; --refresh
+          # does it by re-pulling the entire season, which is forty minutes of
+          # Savant traffic every night to acquire one day. --topup keeps the
+          # cache and asks only for the days since its last game, re-pulling
+          # one overlap day so a previous build that ran mid-game gets its
+          # partial final day repaired.
+          python -u -m xdawg build \
+            --season "${{ inputs.season || '2026' }}" --topup 2>&1 | tee build.log
+
+      - name: Verify the leaderboard
+        run: python -u scripts/verify_build.py site/data/data.js | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Award summary
+        if: always()
+        run: |
+          {
+            echo '## Nightly'
+            sed -n '/wrote .*awards.js/p;/awards failed/p' build.log
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say what went wrong
+        if: failure()
+        run: |
+          {
+            echo '## Nightly FAILED'
+            echo 'The site was not updated. Last 40 lines of the build log:'
+            echo '```'
+            tail -40 build.log 2>/dev/null || echo '(no build log -- it failed before the build step)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-output
+          path: |
+            build.log
+            site/data/data.js
+            site/data/awards.js
+          retention-days: 14
+
+      - name: Commit
+        id: commit
+        if: success()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          PATHS="site/data/data.js site/data/awards.js site/index.html site/awards.html"
+          # --porcelain, not `git diff`: awards.js is untracked until the
+          # first nightly run creates it, and diff reports nothing at all for
+          # an untracked path.
+          if [ -z "$(git status --porcelain -- $PATHS)" ]; then
+            echo "nothing changed overnight."
+            exit 0
+          fi
+          git add $PATHS
+          git commit -m "Nightly refresh $(date -u +%Y-%m-%d)"
+          git push
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy the site
+        if: ${{ steps.commit.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref "${{ github.ref_name }}"

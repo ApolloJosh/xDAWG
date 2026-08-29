@@ -245,9 +245,45 @@ Weeks are Monday–Sunday. Months are calendar months.
 **They are not decided by DAWG+.** A day is about four plate appearances and
 every pillar is a rate against a baseline; at four trips those rates are
 noise, and a confident DAWG+ for one day would be a lie with a straight face.
-The award is decided by contribution:
+The score is two halves, in DAWG points (1 pt = 1% win probability):
 
-    score = sum over the window of ( WPA x FIGHT weight )
+    score = OUTCOME (100 x WPA x FIGHT) + PROCESS (credits x leverage x FIGHT)
+
+PROCESS is the DAWG half and the reason this is not a win-probability
+leaderboard: the eight-pitch walk in the ninth, the two-strike foul-off,
+chasing and not whiffing, wearing a pitch; the closer pumping strikes with men
+on, working inside to a same-handed hitter, escaping a jam scoreless. Debits
+for taking strike three and for the free pass in a tight spot. Values live in
+`config.AWARD_CREDITS`. Every credit is a COUNTABLE EVENT, which is what makes
+it usable in a one-day window where a rate would be shrunk to nothing.
+
+Three corrections make the halves comparable, each found by watching the first
+cut get it wrong:
+
+- **Centered.** WPA is zero-sum; credits only accumulate. Raw, the day award
+  went to a pitcher with +0.039 WPA and a score of 64 — a pitch count, not an
+  award. Every plate appearance is now charged the credits an average player
+  would have earned at that leverage against that opponent.
+- **Damped.** Leverage runs to 6 and multiplies every credit, so a six-point
+  jam escape at 6x was worth 68 points, more than a walk-off. The multiplier
+  is square-rooted and capped at 2x.
+- **Capped.** Leverage and opponent weight compound, so no single plate
+  appearance may earn more process than the 99.5th percentile of real WPA
+  swings.
+
+The balance is **calibrated, not guessed**: `calibrate_process` matches the
+process bucket's spread to WPA's at the player-day level, so the AWARD_CREDITS
+numbers only decide what a jam escape is worth relative to a two-strike
+foul-off. `AWARD_PROCESS_BALANCE` is the dial (1.0 = even).
+
+Worth knowing: process accumulates steadily while WPA is noisy, so **the
+longer the window the more process decides it** — roughly even on a day,
+heavily process by a month. Arguably right for a dawg metric, but a design
+property rather than an accident.
+
+`inside_sign` learns which sign of `plate_x` means inside from the mean
+plate_x of hit batsmen per stance, rather than hardcoding a convention that
+would silently reward pitching AWAY if Savant flipped the axis.
 
 WPA is already leverage-aware by construction, the FIGHT weight asks who it
 was against, and it is summed rather than averaged so four good trips beat
@@ -297,10 +333,19 @@ came to 2.7 MB; only the CURRENT window keeps every player, and past windows
 keep each club's best plus the overall top five — enough for the team and
 league filters to work all the way back, at 680 KB.
 
-**Freshness.** `.github/workflows/nightly.yml` rebuilds and deploys at 11:00
-UTC daily, with `--refresh` so it actually reaches for last night's games (the
-cached parquet would otherwise be served verbatim and the job would rebuild
-yesterday's numbers forever). The page also computes its own staleness from
+**Freshness.** `.github/workflows/nightly.yml` rebuilds and deploys at 11:17
+UTC daily with `--topup`, which keeps the Statcast cache and pulls only the
+days since its last game, re-pulling one overlap day so a build that ran while
+games were in progress gets its partial final day repaired. It replaced
+`--refresh`, which reached the same games by re-pulling the whole season --
+forty minutes of Savant traffic every night to acquire one day.
+
+The cron sits at :17 rather than :00 deliberately. GitHub runs scheduled
+workflows on a best-effort queue and warns they may be delayed or dropped
+under load, and the top of the hour is where nearly everybody points their
+cron. If a nightly appears not to have run, check the Actions tab first: a run
+that never fired and a run that failed look identical from the site, and only
+one of them is a bug in this repo. The page also computes its own staleness from
 `through` and prints a banner when the data is two or more days old — an award
 called "of the Day" that is quietly a week old is worse than no award.
 
