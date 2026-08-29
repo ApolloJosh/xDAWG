@@ -8,12 +8,18 @@ name: Nightly refresh
 # Cheap because the Statcast cache carries over between runs: only the games
 # since the last pull have to come down, not the whole season again.
 #
-# 11:00 UTC is roughly 4am Pacific / 7am Eastern -- after the last west-coast
+# 11:17 UTC is roughly 4am Pacific / 7am Eastern -- after the last west-coast
 # game has finished and Savant has ingested it, before anyone looks.
+#
+# :17 rather than :00 on purpose. GitHub runs scheduled workflows on a
+# best-effort queue and explicitly warns that they may be delayed, or dropped
+# entirely, during periods of high load -- and the top of the hour is the most
+# congested minute there is, because that is where almost everybody points
+# their cron. An odd minute is the cheapest thing you can do about it.
 
 on:
   schedule:
-    - cron: "0 11 * * *"
+    - cron: "17 11 * * *"
   workflow_dispatch:
     inputs:
       season:
@@ -74,11 +80,14 @@ jobs:
           XDAWG_CACHE: ${{ runner.temp }}/xdawg_cache
         run: |
           set -o pipefail
-          # --refresh so the pull actually reaches for last night's games.
-          # Without it the cached season parquet is served verbatim and the
-          # nightly job would faithfully rebuild yesterday's numbers forever.
+          # --topup, not --refresh. Both reach last night's games; --refresh
+          # does it by re-pulling the entire season, which is forty minutes of
+          # Savant traffic every night to acquire one day. --topup keeps the
+          # cache and asks only for the days since its last game, re-pulling
+          # one overlap day so a previous build that ran mid-game gets its
+          # partial final day repaired.
           python -u -m xdawg build \
-            --season "${{ inputs.season || '2026' }}" --refresh 2>&1 | tee build.log
+            --season "${{ inputs.season || '2026' }}" --topup 2>&1 | tee build.log
 
       - name: Verify the leaderboard
         run: python -u scripts/verify_build.py site/data/data.js | tee -a "$GITHUB_STEP_SUMMARY"
@@ -89,6 +98,17 @@ jobs:
           {
             echo '## Nightly'
             sed -n '/wrote .*awards.js/p;/awards failed/p' build.log
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Say what went wrong
+        if: failure()
+        run: |
+          {
+            echo '## Nightly FAILED'
+            echo 'The site was not updated. Last 40 lines of the build log:'
+            echo '```'
+            tail -40 build.log 2>/dev/null || echo '(no build log -- it failed before the build step)'
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
