@@ -7,17 +7,47 @@ against a baseline. At four trips those rates are noise. Anything that
 printed a confident DAWG+ for a single day would be lying with a straight
 face.
 
-So the award is decided by CONTRIBUTION, not by the pillars:
+So the award is decided by two halves, both countable per event:
 
-    score = sum over the window of ( WPA x FIGHT weight )
+    score = OUTCOME + PROCESS      in DAWG points, 1 pt = 1% win probability
 
-WPA is how far the player moved his own team's win probability, which is
-already leverage-aware by construction -- a two-out single in a tie game in
-the ninth moves it enormously and the same single in a 9-0 game moves it
-almost not at all. The FIGHT weight then asks who it was against, using the
-same opponent-quality engine the season metric uses. Summed rather than
-averaged, because "of the Day" should reward the man who did it four times
-over the man who did it once.
+OUTCOME is 100 x WPA x FIGHT weight. WPA is already leverage-aware by
+construction -- a two-out single in a tie game in the ninth moves win
+probability enormously and the same single in a 9-0 game barely at all -- and
+the FIGHT weight asks who it was against. Summed rather than averaged, because
+"of the Day" should reward the man who did it four times over the man who did
+it once.
+
+PROCESS is the DAWG half, and it is why this is not just a win-probability
+leaderboard. An eight-pitch walk in the ninth, a two-strike foul-off, chasing
+and not whiffing, wearing a pitch; a closer pumping strikes with men on,
+working inside to a same-handed hitter, escaping a jam scoreless. Each is a
+COUNTABLE EVENT, weighted by the leverage it happened in and the opponent it
+happened against. See `config.AWARD_CREDITS`.
+
+Three things make the two halves comparable, and all three were found by
+watching the first cut get them wrong:
+
+  centered   WPA is zero-sum -- what the hitter gains the pitcher loses, and
+             an average night is zero. Credits only accumulate, so raw they
+             measure playing time first and character second. Every plate
+             appearance is charged the credits an average player would have
+             earned in the same leverage and against the same opponent.
+  damped     Leverage runs to 6 and multiplies every credit, so a six-point
+             jam escape at 6x leverage was worth 68 points -- more than a
+             walk-off. The multiplier is square-rooted and capped at 2x.
+  capped     Leverage and opponent weight compound, so no single plate
+             appearance may earn more process than the 99.5th percentile of
+             win-probability swings. Measured off the real distribution
+             rather than picked.
+
+The balance between the halves is calibrated, not guessed: `calibrate_process`
+matches the process bucket's spread to WPA's at the player-day level, so the
+numbers in AWARD_CREDITS decide only what a jam escape is worth RELATIVE to a
+two-strike foul. One property worth knowing -- process accumulates steadily
+while WPA is noisy, so the longer the window the more process decides it. Over
+a month that is arguably correct for a dawg metric, but it is a design choice,
+and `AWARD_PROCESS_BALANCE` is the dial.
 
 The four pillars are still computed over the window and shown underneath,
 with the ordinary shrinkage applied. That shrinkage is the honesty: at a
@@ -31,13 +61,18 @@ Weeks run Monday to Sunday. Months are calendar months.
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 
 import numpy as np
 import pandas as pd
 
 from . import fight as fight_mod
 from . import ingest
-from .config import PILLAR_WEIGHTS
+from .config import AWARD_CREDITS, AWARD_PROCESS_BALANCE, PILLAR_WEIGHTS
+
+# Every credit name, both roles, for carrying per-credit counts through to the
+# site so a reader can see WHY the process half scored what it did.
+CREDIT_NAMES = sorted({c for role in AWARD_CREDITS.values() for c in role})
 
 # Trips needed to be eligible, for a COMPLETE window. Without a floor a
 # September call-up with one pinch-hit homer in his only trip wins DAWG of the
@@ -81,6 +116,157 @@ def eligibility_floor(kind: str, key: str, through: pd.Timestamp) -> int:
     played = min(max((through - start).days + 1, 1), total)
     scaled = int(round(MIN_PA[kind] * played / total))
     return max(MIN_FLOOR, scaled)
+
+
+def inside_sign(p: pd.DataFrame) -> dict:
+    """Which sign of `plate_x` means INSIDE, learned from hit batsmen.
+
+    Statcast's plate_x convention is stated from the catcher's point of view,
+    which means the sign that counts as "in on his hands" flips with the
+    batter's handedness -- and getting it backwards would score a pitcher for
+    living on the outside corner and call it courage.
+
+    Rather than hardcode the convention and hope it never changes, read it off
+    the data: a hit-by-pitch is unambiguously inside. The mean plate_x of
+    HBPs for each stance gives the sign directly, and it is self-correcting if
+    Savant ever flips the axis.
+    """
+    if not {"plate_x", "stand", "events"}.issubset(p.columns):
+        return {}
+    hbp = p[p["events"].astype(str).eq("hit_by_pitch")]
+    out = {}
+    for stance in ("L", "R"):
+        sel = hbp[hbp["stand"].astype(str).eq(stance)]
+        x = pd.to_numeric(sel.get("plate_x"), errors="coerce").dropna()
+        if len(x) >= 20:
+            out[stance] = 1.0 if x.mean() > 0 else -1.0
+    return out
+
+
+def _process_points(p: pd.DataFrame) -> pd.DataFrame:
+    """Per-plate-appearance DAWG process credits, for both roles.
+
+    Returns one row per (game_pk, at_bat_number) with a `proc_hitter` and
+    `proc_pitcher` total plus a count column per credit, all already weighted
+    by the leverage of the moment. The FIGHT opponent weight is applied later,
+    at the plate-appearance level, because it is constant across a PA.
+    """
+    from .config import AWARD_CREDITS, INSIDE_FT
+    from .pillars.hitters import tag_pitch_events
+
+    d = tag_pitch_events(p).sort_values(
+        ["game_pk", "at_bat_number", "pitch_number"])
+    key = ["game_pk", "at_bat_number"]
+
+    li = pd.to_numeric(d.get("li", pd.Series(1.0, index=d.index)),
+                       errors="coerce").fillna(1.0).to_numpy(dtype="float64")
+    desc = d["description"].astype(str)
+    ev_pa = d.groupby(key)["events"].transform("last").astype(str)
+    pnum = pd.to_numeric(d["pitch_number"], errors="coerce").fillna(1).to_numpy()
+    strikes = pd.to_numeric(d["strikes"], errors="coerce").fillna(0).to_numpy()
+
+    def arr(x):
+        return pd.Series(x).fillna(False).to_numpy(dtype=bool)
+
+    two_strike = arr(d["two_strike"])
+    flags = {}
+
+    # ---- hitter ----
+    flags["extra_pitch"] = (pnum >= 6).astype(float)
+    flags["two_strike_foul"] = (arr(d["is_foul"]) & two_strike).astype(float)
+    flags["chase_contact"] = arr(d["chase_contact"]).astype(float)
+    flags["hard_hit"] = arr(d["hard_hit"]).astype(float)
+    # A called strike with two already on him IS strike three looking.
+    flags["called_strike_three"] = (
+        desc.eq("called_strike").to_numpy() & (strikes == 2)).astype(float)
+    # PA-level: credit once, on the final pitch, so it is not multiplied by
+    # the number of pitches it took.
+    last_pitch = ~d.duplicated(key, keep="last")
+    reached = ev_pa.isin(_HITS | _WALKS | _HBP).to_numpy()
+    saw_two = d.groupby(key)["two_strike"].transform("max").fillna(False).to_numpy(dtype=bool)
+    flags["survived_two_strikes"] = (
+        last_pitch.to_numpy() & reached & saw_two).astype(float)
+    flags["hbp"] = (last_pitch.to_numpy()
+                    & ev_pa.isin(_HBP).to_numpy()).astype(float)
+
+    # ---- pitcher ----
+    runners = d[["on_1b", "on_2b", "on_3b"]].notna().any(axis=1).to_numpy()
+    in_zone = ~arr(d["out_of_zone"])
+    flags["zone_with_traffic"] = (in_zone & runners).astype(float)
+
+    signs = inside_sign(p)
+    if signs and {"plate_x", "stand", "p_throws"}.issubset(d.columns):
+        px = pd.to_numeric(d["plate_x"], errors="coerce").to_numpy(
+            dtype="float64", na_value=np.nan)
+        stance = d["stand"].astype(str).to_numpy()
+        sgn = np.where(stance == "L", signs.get("L", 0.0), signs.get("R", 0.0))
+        same_hand = (d["p_throws"].astype(str).to_numpy() == stance)
+        with np.errstate(invalid="ignore"):
+            flags["inside_same_hand"] = (
+                same_hand & (px * sgn > INSIDE_FT)).astype(float)
+    else:
+        warnings.warn("no hit-by-pitch sample to orient plate_x; the "
+                      "pitching-inside credit is dropped rather than guessed")
+        flags["inside_same_hand"] = np.zeros(len(d))
+
+    strike_desc = {"called_strike", "swinging_strike", "swinging_strike_blocked",
+                   "foul", "foul_tip", "hit_into_play"}
+    flags["first_pitch_strike"] = (
+        (pnum == 1) & desc.isin(strike_desc).to_numpy()).astype(float)
+    flags["putaway"] = (last_pitch.to_numpy()
+                        & ev_pa.isin(_K).to_numpy()).astype(float)
+    flags["walk_allowed"] = (last_pitch.to_numpy()
+                             & ev_pa.isin(_WALKS).to_numpy()).astype(float)
+
+    # Jam escaped: the first genuine jam of a half inning, credited only if
+    # nothing scored from there to the end of it.
+    flags["jam_escaped"] = _jam_escapes(p, d, key)
+
+    # Leverage rides every credit, DAMPED. The empirical leverage index runs
+    # to 6, and multiplying a six-point jam escape by six put 68 points on a
+    # single plate appearance -- more than a walk-off homer is worth in win
+    # probability. The credit is for the ACT; leverage should modulate it, not
+    # decide it by itself. Square-rooting keeps the ordering (a 4x spot still
+    # counts double a neutral one) while capping the tail at 2x.
+    lev = np.clip(np.sqrt(np.maximum(li, 0.0)), 0.25, 2.0)
+
+    out = pd.DataFrame({c: d[c].to_numpy() for c in key})
+    for name, f in flags.items():
+        out[name] = f                            # raw counts, for display
+        out[f"_w_{name}"] = f * lev              # weighted, for scoring
+    out = out.groupby(key, as_index=False).sum()
+
+    for role in ("hitter", "pitcher"):
+        vals = AWARD_CREDITS[role]
+        out[f"proc_{role}"] = sum(
+            out[f"_w_{c}"] * v for c, v in vals.items()
+            if f"_w_{c}" in out.columns)
+    return out.drop(columns=[c for c in out.columns if c.startswith("_w_")])
+
+
+def _jam_escapes(p: pd.DataFrame, d: pd.DataFrame, key: list) -> np.ndarray:
+    """1.0 on the pitch that opened a jam the pitcher then escaped scoreless."""
+    try:
+        from .pillars.pitchers import _is_jam, half_inning_pas
+
+        hip = half_inning_pas(p)
+        jam = _is_jam(hip)
+        hip = hip.assign(_jam=jam)
+        # Runs from each plate appearance to the end of its half inning.
+        rest = hip.groupby("_half")["runs"].transform(
+            lambda s: s[::-1].cumsum()[::-1])
+        first = hip[hip["_jam"]].drop_duplicates("_half", keep="first")
+        escaped = first[rest.loc[first.index].fillna(0) <= 0][key]
+        if escaped.empty:
+            return np.zeros(len(d))
+        escaped = escaped.assign(_e=1.0)
+        marked = d[key].merge(escaped, on=key, how="left")["_e"].fillna(0.0)
+        # Once per plate appearance, not once per pitch in it.
+        return (marked.to_numpy() * (~d.duplicated(key, keep="last")).to_numpy()
+                ).astype(float)
+    except Exception as e:                                   # noqa: BLE001
+        warnings.warn(f"jam-escape credit unavailable ({e})")
+        return np.zeros(len(d))
 
 
 def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
@@ -129,11 +315,21 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
                                   "outs_recorded", "runs"]]
         pa = pa.merge(hip, on=["game_pk", "at_bat_number"], how="left")
     except Exception as e:                                   # noqa: BLE001
-        import warnings
         warnings.warn(f"innings and runs unavailable ({e}); pitcher lines "
                       "will show strikeouts and walks only")
         pa["outs_recorded"] = np.nan
         pa["runs"] = np.nan
+
+    # Process credits: the DAWG half of the award, countable per event so it
+    # survives a one-day window where every rate would be shrunk to nothing.
+    try:
+        proc = _process_points(p)
+        pa = pa.merge(proc, on=["game_pk", "at_bat_number"], how="left")
+    except Exception as e:                                   # noqa: BLE001
+        warnings.warn(f"process credits unavailable ({e}); awards fall back "
+                      "to win probability alone")
+        pa["proc_hitter"] = 0.0
+        pa["proc_pitcher"] = 0.0
 
     batting_home = pa["inning_topbot"].astype(str).str.startswith("Bot")
     # Win probability from the BATTING team's side. delta_home_win_exp is
@@ -177,17 +373,56 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
         "events": pa.get("events", pd.Series("", index=pa.index)).astype(str),
     }
 
-    hit = pd.DataFrame(dict(
-        common, player_id=pa["batter"], role="hitter", team=bat_team,
-        opp=fld_team, wpa=wpa_bat, rv=rv, fight_w=weights(bat_team, fld_team),
-    ))
-    pit = pd.DataFrame(dict(
-        common, player_id=pa["pitcher"], role="pitcher", team=fld_team,
-        opp=bat_team, wpa=-wpa_bat, rv=-rv, fight_w=weights(fld_team, bat_team),
-    ))
+    def proc_of(role):
+        col = f"proc_{role}"
+        return pd.to_numeric(pa.get(col, pd.Series(0.0, index=pa.index)),
+                             errors="coerce").fillna(0.0).to_numpy()
+
+    credit_cols = [c for c in pa.columns
+                   if c in set(CREDIT_NAMES) and c not in ("proc_hitter", "proc_pitcher")]
+
+    def frame(role, pid, team, opp, wpa_signed, rv_signed, own, against):
+        w = weights(own, against)
+        f = pd.DataFrame(dict(
+            common, player_id=pid, role=role, team=team, opp=opp,
+            wpa=wpa_signed, rv=rv_signed, fight_w=w,
+            proc=proc_of(role) * w,
+        ))
+        for c in credit_cols:
+            f[c] = pd.to_numeric(pa[c], errors="coerce").fillna(0.0).to_numpy()
+        return f
+
+    hit = frame("hitter", pa["batter"], bat_team, fld_team, wpa_bat, rv,
+                bat_team, fld_team)
+    pit = frame("pitcher", pa["pitcher"], fld_team, bat_team, -wpa_bat, -rv,
+                fld_team, bat_team)
     out = pd.concat([hit, pit], ignore_index=True).dropna(subset=["player_id"])
     out["player_id"] = out["player_id"].astype("int64")
-    out["score"] = out["wpa"] * out["fight_w"]
+
+    # DAWG points: 1 point = 1% of win probability. The process bucket is
+    # rescaled to match on the caller's side, once, for the whole season.
+    out["wpa_pts"] = 100.0 * out["wpa"] * out["fight_w"]
+
+    # Process must be centered before it can be added to win probability.
+    # WPA is zero-sum by construction -- what the hitter gains the pitcher
+    # loses, and an average night is zero. Process credits only accumulate, so
+    # raw they measure playing time first and character second: on the first
+    # cut the day award went to a pitcher with +0.039 WPA and a score of 64,
+    # which is not an award, it is a pitch count.
+    #
+    # So each plate appearance is charged the credits an AVERAGE player would
+    # have earned in the same situation. The expectation scales with leverage
+    # and opponent quality, because those multiply every credit: a closer in a
+    # one-run game against a rival is held to a correspondingly higher bar,
+    # and a man mopping up a blowout is not credited for being there.
+    for role in ("hitter", "pitcher"):
+        m = out["role"].eq(role).to_numpy()
+        if not m.any():
+            continue
+        ctx = (out.loc[m, "li"] * out.loc[m, "fight_w"]).to_numpy(dtype="float64")
+        mean_ctx = ctx.mean() or 1.0
+        expected = out.loc[m, "proc"].mean() * (ctx / mean_ctx)
+        out.loc[m, "proc"] = out.loc[m, "proc"].to_numpy() - expected
     return out
 
 
@@ -272,6 +507,45 @@ def _stat_lines(pa: pd.DataFrame, key_col: str) -> dict:
     return out
 
 
+def calibrate_process(pa: pd.DataFrame) -> float:
+    """Scale the process bucket so it decides the award about as often as WPA.
+
+    "Even split" is enforced empirically rather than by picking constants:
+    both halves are summed to the finest award unit there is -- one player,
+    one day -- and the process bucket is multiplied by whatever makes its
+    spread across those player-days equal to win probability's.
+
+    Doing it this way means the numbers in `AWARD_CREDITS` only ever decide
+    what a jam escape is worth RELATIVE to a two-strike foul. How much process
+    counts overall is measured, not guessed, and it re-measures itself every
+    build -- which matters because the right constant depends on the run
+    environment and would drift every season.
+
+    One scalar for the whole season, not one per window, so a Tuesday in April
+    and a Tuesday in September are on the same scale.
+    """
+    day = pa.assign(_d=pa["game_date"].dt.strftime("%Y-%m-%d")).groupby(
+        ["_d", "player_id", "role"])[["wpa_pts", "proc"]].sum()
+    # Standard deviation, matched at the player-day level.
+    #
+    # A 95th percentile was tried here and is worse. Process is mostly-zero
+    # with occasional spikes, so its p95 is small while its max is not;
+    # matching p95 therefore hands the bucket a large multiplier and the rare
+    # big inning explodes -- one plate appearance came out worth 70 points,
+    # more than a walk-off homer. Matching sd uses the whole distribution,
+    # which is what actually needs to line up. The tail is controlled at
+    # source instead, by damping the leverage multiplier on each credit.
+    sd_w = float(day["wpa_pts"].std())
+    sd_p = float(day["proc"].std())
+    if not np.isfinite(sd_w) or not np.isfinite(sd_p) or sd_p <= 0:
+        warnings.warn("cannot calibrate the process bucket; using 1.0")
+        return 1.0
+    scale = (sd_w / sd_p) * AWARD_PROCESS_BALANCE
+    print(f"[xdawg] process scale {scale:.3f} "
+          f"(player-day spread: WPA {sd_w:.2f} pts, process {sd_p:.2f} raw)")
+    return scale
+
+
 def window_key(d: pd.Timestamp, kind: str) -> str:
     if kind == "day":
         return d.strftime("%Y-%m-%d")
@@ -314,8 +588,11 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
     d = pa.copy()
     d["_w"] = d["game_date"].map(lambda x: window_key(x, kind))
 
+    agg_credits = {c: (c, "sum") for c in CREDIT_NAMES if c in d.columns}
     g = d.groupby(["_w", "player_id", "role"]).agg(
         score=("score", "sum"),
+        wpa_pts=("wpa_pts", "sum"),
+        proc_pts=("proc_pts", "sum"),
         wpa=("wpa", "sum"),
         rv=("rv", "sum"),
         n=("score", "size"),
@@ -323,6 +600,7 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
         team=("team", "last"),
         opp_w=("fight_w", "mean"),
         top_li=("li", "max"),
+        **agg_credits,
     ).reset_index()
 
     # The single biggest swing in the window, for the "why he won" line.
@@ -361,12 +639,24 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
                 "role": r["role"],
                 "team": team,
                 "league": lg,
-                "score": round(float(r["score"]), 4),
+                "score": round(float(r["score"]), 2),
+                # The two halves, so the reader can see which one won it and
+                # so the balance between them is auditable rather than buried.
+                "wpa_pts": round(float(r["wpa_pts"]), 2),
+                "proc_pts": round(float(r["proc_pts"]), 2),
                 "wpa": round(float(r["wpa"]), 4),
                 "n": int(r["n"]),
                 "games": int(r["games"]),
             }
             row["line"] = lines.get((key, pid, r["role"]))
+            # Which credits he actually earned. Only the ones that fired, and
+            # only for his own role -- a hitter has no jam escapes and listing
+            # a zero would imply he might have.
+            got = {c: int(round(float(r[c])))
+                   for c in AWARD_CREDITS[r["role"]]
+                   if c in g.columns and abs(float(r[c])) >= 0.5}
+            if got:
+                row["credits"] = got
             # `best` is kept for the podium of EVERY window, not just the
             # featured one: the archive popup explains the moment for a week
             # three weeks back, and without this it would have nothing to
@@ -449,6 +739,26 @@ def build_awards(p: pd.DataFrame, season: int, names: dict,
     pa = _plate_appearances(p, season)
     teams = teams or {}
 
+    # DAWG points: win probability in hundredths, plus the process bucket
+    # rescaled to match its spread.
+    proc_scale = calibrate_process(pa)
+    pa["proc_pts"] = pa["proc"] * proc_scale
+
+    # No single plate appearance may earn more process than the biggest swing
+    # win probability ever produces. Leverage and the FIGHT weight both
+    # multiply every credit, so they compound: a jam escaped plus a put-away
+    # at high leverage against a good club came out at 68 points against a
+    # WPA maximum of 29, which would mean the process half could outbid a
+    # walk-off. The cap is measured off the real WPA distribution rather than
+    # picked, and it bites on a handful of plate appearances a season.
+    cap = float(pa["wpa_pts"].abs().quantile(0.995))
+    if np.isfinite(cap) and cap > 0:
+        clipped = int((pa["proc_pts"].abs() > cap).sum())
+        pa["proc_pts"] = pa["proc_pts"].clip(-cap, cap)
+        print(f"[xdawg] process capped at +/-{cap:.1f} pts per plate "
+              f"appearance ({clipped} of {len(pa):,} clipped)")
+    pa["score"] = pa["wpa_pts"] + pa["proc_pts"]
+
     # Which window is "current" has to be decided before ranking, because it
     # decides which board keeps its full roster.
     through_ts = pa["game_date"].max()
@@ -490,6 +800,8 @@ def build_awards(p: pd.DataFrame, season: int, names: dict,
         "generated": pd.Timestamp.now("UTC").strftime("%Y-%m-%d %H:%M UTC"),
         "through": pa["game_date"].max().strftime("%Y-%m-%d"),
         "min_pa": MIN_PA,
+        "process_scale": round(float(proc_scale), 4),
+        "credit_values": AWARD_CREDITS,
         # The floor ACTUALLY applied to each window, after prorating for how
         # much of it had been played. The page quotes this rather than MIN_PA,
         # because on an in-progress window they differ and the reader deserves

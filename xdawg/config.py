@@ -208,6 +208,73 @@ FIGHT = {
 }
 
 # ---------------------------------------------------------------------------
+# DAWG of the Day / Week / Month -- the process half of the award score.
+#
+# WPA answers "what did it do to the scoreboard." These answer "was that a
+# dawg at-bat," and they are the reason the award is not just a win-probability
+# leaderboard. Every one is a COUNTABLE EVENT rather than a rate, which is what
+# makes them usable in a one-day window: the pillars are rates and need
+# shrinkage, and shrinkage annihilates them at four plate appearances. A sum of
+# five events is a real sum of five events.
+#
+# Each credit is multiplied by the leverage of the moment and the FIGHT
+# opponent weight before it counts, so a strike thrown with traffic on in a
+# one-run game against a division rival is worth many times the same strike up
+# nine in April.
+#
+# These numbers are RELATIVE weights within the process bucket, not absolute
+# points. The bucket as a whole is rescaled at build time so its spread across
+# players matches win probability's -- see AWARD_PROCESS_BALANCE. So arguing
+# about whether a jam escape is worth six or eight is arguing about its value
+# against the other credits, not about how much process counts overall.
+# ---------------------------------------------------------------------------
+
+AWARD_CREDITS = {
+    "hitter": {
+        # The eight-pitch walk in the ninth. Per pitch past the fifth, so a
+        # long at-bat compounds rather than paying a flat bonus.
+        "extra_pitch":           0.8,
+        # Still alive with two strikes. The whole BITE thesis in one event.
+        "two_strike_foul":       0.6,
+        # Chasing is not the sin; whiffing is. He went and got it and put it
+        # in play or fouled it away.
+        "chase_contact":         0.5,
+        "hard_hit":              1.0,
+        # Down to his last strike and he reached anyway.
+        "survived_two_strikes":  2.5,
+        "hbp":                   3.0,
+        # Taking strike three in a big spot is the anti-dawg at-bat.
+        "called_strike_three":  -1.5,
+    },
+    "pitcher": {
+        # "Pumps strikes" -- in the zone with men on, when nibbling is the
+        # easy way out.
+        "zone_with_traffic":     0.4,
+        # Willing to work the inner half against a same-handed hitter and
+        # wear the consequences.
+        "inside_same_hand":      0.6,
+        "first_pitch_strike":    0.3,
+        "putaway":               2.5,
+        # Got into trouble and got out of it with nothing across.
+        "jam_escaped":           6.0,
+        # The free pass in a tight spot, named in the spec as the anti-dawg
+        # outcome and debited here as one.
+        "walk_allowed":         -2.0,
+    },
+}
+
+# 1.0 makes the process bucket's spread across player-days equal to win
+# probability's, so the two halves decide the award about equally often. Below
+# 1.0 process becomes a tiebreaker; above 1.0 it leads. Calibrated against the
+# real distribution at build time rather than guessed, because the right
+# constant depends on the run environment and would drift every season.
+AWARD_PROCESS_BALANCE = 1.0
+
+# Pitches this far onto the batter's half of the plate count as working
+# inside, in feet. Half the plate is 0.71 ft, so this is genuinely in on him.
+INSIDE_FT = 0.40
+
+# ---------------------------------------------------------------------------
 # Leverage. We compute an EMPIRICAL leverage index directly from the data
 # rather than shipping a static table: for each game state, LI is the mean
 # absolute win-expectancy swing, normalized to the league mean of 1.0.
