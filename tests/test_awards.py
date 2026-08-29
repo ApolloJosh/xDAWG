@@ -349,8 +349,51 @@ def test_traditional_lines_are_computed_by_the_rule_book():
     # scored: 1.0 IP, RA9 of zero rather than a null.
     pline = day[(900_020, "pitcher")]["line"]
     assert pline["BF"] == 4 and pline["K"] == 1 and pline["BB"] == 1
-    assert pline["IP"] == 1.0, pline
+    assert pline["IP"] == "1.0", pline
+    assert pline["outs"] == 3, pline
     assert pline["R"] == 0 and pline["RA9"] == 0.0, pline
+
+
+def test_innings_are_written_in_outs_not_tenths():
+    """6.1 is six innings and one third. It is not a decimal.
+
+    A plain `outs / 3` rounded to one place gives 6.3 for nineteen outs,
+    which reads as a real number and is wrong in a way nobody would question
+    on a box score. The true value stays in `outs`, which is what RA9
+    divides by -- "6.1" and "6.2" cannot be compared or averaged as numbers.
+    """
+    cases = {0: "0.0", 1: "0.1", 2: "0.2", 3: "1.0", 4: "1.1", 5: "1.2",
+             6: "2.0", 19: "6.1", 20: "6.2", 21: "7.0", 27: "9.0"}
+    for outs, want in cases.items():
+        got = awards.innings_notation(outs)
+        assert got == want, f"{outs} outs should read {want}, got {got}"
+    assert awards.innings_notation(None) is None
+    assert awards.innings_notation(float("nan")) is None
+
+
+def test_ra9_still_divides_by_true_innings_not_the_notation():
+    """The display change must not leak into the arithmetic.
+
+    Nineteen outs is 6.333 innings, not 6.1. If RA9 ever started dividing by
+    the notation it would read about 4% high and look plausible.
+    """
+    B = 500_040
+    rows = []
+    # Seven batters, six retired, one run in. Outs run 0,1,2 then the inning
+    # turns over, so this is a clean two innings plus one.
+    for i in range(7):
+        rows.append(dict(_game(41, "2026-07-06", rows=[
+            (600_500 + i, 900_040, "Top", -0.01)])[0],
+            at_bat_number=i + 1, outs_when_up=min(i, 2), inning=1 + i // 3))
+    aw = _build(pd.DataFrame(rows))
+    line = [r for r in aw["boards"]["day"]["2026-07-06"]
+            if r["role"] == "pitcher"][0]["line"]
+    outs, ra9 = line["outs"], line["RA9"]
+    assert line["IP"] == awards.innings_notation(outs)
+    if ra9 is not None and outs:
+        expected = line["R"] * 9.0 / (outs / 3.0)
+        assert abs(ra9 - expected) < 0.01, (
+            f"RA9 {ra9} should be {expected:.2f} from {outs} outs")
 
 
 def test_ra9_is_not_labelled_era():
