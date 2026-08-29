@@ -426,6 +426,23 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
     return out
 
 
+def innings_notation(outs) -> str | None:
+    """Innings pitched the way a box score writes them.
+
+    6.1 is six innings and ONE THIRD, not six and one tenth. The decimal here
+    is a count of outs, not a fraction, which is why 19 outs is "6.1" and
+    never "6.3" -- and why this cannot be left to a decimal formatter.
+
+    Returned as a string on purpose. The true value is `outs`, which is what
+    RA9 divides by; anything that needs arithmetic must use that rather than
+    parsing this back, because "6.1" and "6.2" are not comparable as numbers.
+    """
+    if outs is None or (isinstance(outs, float) and not np.isfinite(outs)):
+        return None
+    o = int(round(float(outs)))
+    return f"{o // 3}.{o % 3}"
+
+
 # Statcast `events` vocabulary, grouped the way the rule book groups it.
 _HITS = {"single", "double", "triple", "home_run"}
 _TB = {"single": 1, "double": 2, "triple": 3, "home_run": 4}
@@ -498,7 +515,11 @@ def _stat_lines(pa: pd.DataFrame, key_col: str) -> dict:
             }
         else:
             line = {
-                "IP": (None if pd.isna(ip[i]) else round(float(ip[i]), 1)),
+                # IP is a STRING in box-score notation; `outs` is the number
+                # anything arithmetic should use. RA9 below already divides
+                # by true innings (outs/3), not by this.
+                "IP": innings_notation(r["outs"]),
+                "outs": int(r["outs"]) if pd.notna(r["outs"]) else 0,
                 "K": int(r["k"]), "BB": int(r["bb"]),
                 "RA9": (None if pd.isna(ra9[i]) else round(float(ra9[i]), 2)),
                 "BF": int(r["pa"]), "R": int(r["runs"]),
