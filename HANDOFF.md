@@ -400,6 +400,188 @@ every play worth posting, and whether Savant serves a clip for every playId.
 Partial success is the expected steady state — the CLI exits non-zero only
 when *every* winner fails.
 
+## Social — the card and the reel (Phase 1)
+
+`python -m xdawg posts --window day --top 5`, or **Actions tab → "Posts"**.
+Per winner it writes a 4:5 card, a 1080×1920 vertical reel, the raw clip,
+and a caption. Nothing is uploaded — posting is a later phase, and a folder
+a human glances at is the right amount of friction while this is young.
+
+Three modules, one job each, and none of them knows about the others:
+`xdawg/card.py` (award row → graphic), `xdawg/reel.py` (graphic + clip →
+vertical video), `xdawg/posts.py` (orchestration and captions).
+
+**The look is the site's, deliberately and in detail.** Same palette, same
+type, same words. A channel whose posts look like the site is one thing
+with two front doors; a channel with its own visual language is a second
+brand nobody asked for, and the mismatch is the first thing a reader
+notices when they click through. Concretely, from `site/awards.html`:
+
+| `#E63600` primary | the score |
+| `#00A69B` secondary | the process half, debits, the PIT tag |
+| `#FFD300` accent | the HIT tag |
+| `#000` ink | rules, the kind bar, body type |
+| `#5a5a5a` / `#d5d5d5` | captions and meta / light rules |
+
+No club colours. The site does not use them, and thirty accent schemes
+against one leaderboard would read as thirty products.
+
+The card also borrows the site's **words**, not just its colours: the
+thirteen credit labels and their order, the "His biggest moment was a
+double play in the 5th against BOS — worth +12.9 points of win probability
+at 2.58x leverage" sentence, the "NYY · 24 trips across 1 game" meta line,
+the signed-three-decimal number format. `tests/test_card.py` reads
+`site/awards.html` and asserts they still agree — two lists of thirteen
+phrases drift the moment somebody edits one of them, and that test is the
+thing that notices. Where the awards payload already holds a value, such as
+the window's label, the card uses it rather than re-deriving it.
+
+**Fonts.** Gobold is the site's display face, is not redistributable, and is
+not in this repo — the site currently falls back to Arial Narrow. Drop
+`Gobold.ttf` / `Gobold-Bold.ttf` into `assets/fonts/` (or `site/assets/
+fonts/`, where the site already looks) and the cards pick them up
+automatically. Until then **Anton** stands in, which is the closest free
+face in the same heavy-condensed genre. Body text is **Arimo**, which is
+metrically Arial — what the site's `--body` actually resolves to. Both are
+inlined as base64, so a runner without them renders the same card.
+
+**The video window is a real hole.** The reel card is 1080×1920 RGBA with a
+transparent rectangle; ffmpeg lays the clip *underneath* and flattens them,
+so the card frames the clip and the clip is never composited over artwork.
+Two things follow, both with tests that fail loudly rather than produce a
+wrong-looking video:
+
+- Nothing paints the `.card` background. The paper lives on the `.top` and
+  `.bot` panels, because a background on `.card` fills the hole with white
+  and the clip becomes invisible.
+- The rectangle is **measured after layout**, not assumed. It moves whenever
+  a block above it changes height. `render_card` returns it; `reel.compose`
+  takes it. A hard-coded y here and a CSS edit there is a clip half behind
+  the credit list, and nobody notices until they watch the file.
+
+**The card fixes its own overflow.** Once the fonts have loaded the page
+squeezes an over-long surname, then drops credit rows from the bottom until
+the footer fits. If it still does not fit, `render_card` raises `Overflow`
+rather than writing a PNG with a footer sliced in half — the card is
+published, so a clipped one is not degraded, it is wrong. Tuning pixel
+constants until today's five winners happen to fit is not a layout, it is a
+coincidence; this holds for whoever wins tomorrow.
+
+Gotchas already paid for:
+
+- **Font-dependent fixups must wait for the fonts.** Run at parse time they
+  measure a fallback face and squeeze names that fit. They now run inside
+  `document.fonts.ready` and set `__cardReady`, which `render_html` waits
+  on — a fixed sleep is a race that loses on a cold runner.
+- **The video frame is `box-shadow`, not `border`.** A border is inside the
+  box, so the measured rectangle would include it and the clip would cover
+  the frame. `.video` also needs a `z-index` or the shadow paints behind
+  its positioned siblings and the rules vanish.
+- **The reel fades to white, and its canvas is white.** A dip to black at
+  each end of a card printed on paper reads as a fault in the file.
+- **Don't `str.title()` anything.** `card.proper_name` exists because
+  `.title()` renders DeJong as Dejong; captions are built from fields
+  rather than by re-casing the card's shouty version.
+
+**The logo lives in `assets/logo/`,** in four cuts, and which one you reach
+for is decided by the background:
+
+| `mark.png` | badge only, dog knocked out (transparent) — for white |
+| `mark-solid.png` | dog filled white, padded — safe on any ground |
+| `lockup.png` | badge plus wordmark, transparent — for white |
+| `lockup-white.png` | the same on an opaque white square — avatars, decks |
+
+The card footer takes `mark.png` automatically; `--logo` only overrides it.
+The badge alone, not a lockup: at 92px tall a stacked wordmark is
+illegible, and `@XDAWGMLB` beside it already says the name. On the black
+kind bar the knockout cut would read as a black dog on black — that is what
+`mark-solid.png` is for. The drawn XDAWG wordmark in the CSS survives only
+as the fallback for a checkout without the assets.
+
+The logo's three colours are `#E63600`, `#00A69B` and `#FFD300` — the site's
+`--primary`, `--secondary` and `--accent` exactly, which is a useful
+confirmation that the palette is settled rather than a coincidence worth
+relying on.
+
+**The credit list is capped by measurement, not by a constant.** The card
+asks for seven rows and the page drops whatever does not fit, which lands
+on four for a post and five for a reel today and will land somewhere else
+the day the moment sentence runs to three lines. Do not replace that with a
+number.
+
+Playwright is deliberately **not** in `requirements.txt`. The nightly build
+has no use for a browser and installing Chromium there would add minutes to
+a job that already takes forty. `posts.yml` installs it itself.
+
+## Social — Bluesky (Phase 2)
+
+`python -m xdawg publish --window day --top 5`, or **Actions tab →
+"Publish to Bluesky"**. The account is
+[@xdawgmlb.bsky.social](https://bsky.app/profile/xdawgmlb.bsky.social)
+(`did:plc:kw3ukp37mdhf7iby2srs3vtu`).
+
+**Posting is opt-in on every run.** Without `--live` (or the workflow's
+`live` box) it is a dry run that prints exactly what would go out, built by
+the same code path that posts — `bluesky.prepare` produces the same records
+`publish_thread` sends, so a preview written by different code can never
+disagree with the real thing.
+
+**Shape: one thread.** Winner as the root, ranks 2–5 chained beneath as
+replies, each carrying its own card. Josh's call. Five separate posts would
+be five feed items from an account with no followers, and the newest-first
+ordering would put the winner last.
+
+Auth is an **app password** — Settings → App Passwords on bsky.app — held in
+the repository secrets `BSKY_HANDLE` and `BSKY_APP_PASSWORD`. Never the
+account password: an app password cannot change the account's email or
+password, and revoking one disturbs nothing else. `bluesky.login` refuses
+anything that is not in `xxxx-xxxx-xxxx-xxxx` shape, because an account
+password would authenticate perfectly well and that is precisely the
+problem. Credentials reach the process as environment variables, never on a
+command line where they would sit in the process table; `_call` never echoes
+a request body into an error, because on `createSession` that body is the
+password.
+
+Three things about this API bite, and all three have tests:
+
+- **300 graphemes, and our captions already run to 290.** So a post is
+  assembled from prioritised blocks — headline and name are required, the
+  moment sentence is worth 5, the split line 3, the tags 1 — and the cheap
+  ones are dropped until it fits. Truncation is the backstop, not the
+  mechanism. The stat line is deliberately absent from the post text: it is
+  on the card in bigger type, and restating it would cost the moment
+  sentence.
+- **Facets carry UTF-8 byte offsets, not character offsets.** The captions
+  contain `·` (2 bytes) and `—` (3 bytes), so every tag sits at a byte index
+  past its character index. Get it wrong and the tag highlights the wrong
+  slice of the sentence — silently, since nothing raises. I got the
+  arithmetic wrong in the *test* first; the round-trip assertion (slice the
+  encoded text by the facet's own offsets and check it spells the tag) is
+  what caught it, and is the one to keep.
+- **Nothing is auto-linked.** `#MLB` with no facet is three inert
+  characters.
+
+Also worth knowing: `aspectRatio` on an image embed is not decoration —
+without it the client guesses and crops a 4:5 card to a letterbox with the
+footer cut off. Alt text is generated from the row and describes the card
+top to bottom, because the stat line and the credit list are on the graphic
+and nowhere in the post text.
+
+**Staleness guard.** `--live` refuses a window whose last day is more than
+`--max-age` (default 2) days old. An award called "of the Day" that goes out
+four days late reads as current and nobody checks; the site prints a banner
+for this, and a timeline has no banner. `--allow-stale` overrides, for
+backfilling. Blob limit is 1,000,000 bytes and the budget here is 950,000 —
+a card that squeaks in at 999,000 is a card that fails the day a name needs
+one more glyph. Cards land at about 130 KB, so the JPEG ladder in
+`fit_image` is a fallback that currently never fires.
+
+Video is next and is a different, fiddlier path: `com.atproto.server.
+getServiceAuth` (aud = the PDS DID, lxm = `com.atproto.repo.uploadBlob`),
+then `app.bsky.video.uploadVideo` against `video.bsky.app`, then poll
+`getJobStatus` until the blob comes back. Limits are 100 MB, three minutes,
+25 videos a day. Not built yet.
+
 ## Past seasons
 
 `python -m xdawg history --seasons 2023 2024 2025 2026`, or **Actions tab →
