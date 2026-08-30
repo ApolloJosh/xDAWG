@@ -1,0 +1,115 @@
+name: Posts
+
+# Phase 1: build a window's posts. Card, vertical reel, caption, per winner.
+#
+# Still nothing goes anywhere near a social platform. The output is a run
+# artifact for a human to look at and, for now, upload by hand. That is the
+# right amount of friction while the pipeline is this young -- an automatic
+# poster that gets a name or a club wrong is a public mistake, and the cost
+# of checking a folder once a day is about ninety seconds.
+#
+# Runs here rather than locally for the same reason clips.yml does: neither
+# statsapi, Savant, nor mlbstatic is reachable from the dev sandbox. Chromium
+# renders the cards; ffmpeg burns them together with the clips.
+
+on:
+  workflow_dispatch:
+    inputs:
+      window:
+        description: day | week | month
+        required: false
+        default: day
+      key:
+        description: "Window key, e.g. 2026-08-28. Blank means the latest board."
+        required: false
+        default: ""
+      top:
+        description: How many winners to build
+        required: false
+        default: "5"
+      handle:
+        description: The channel handle printed in the footer
+        required: false
+        default: "@XDAWGMLB"
+      no_video:
+        description: Cards and captions only, no clips
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xdawg-posts
+  cancel-in-progress: true
+
+jobs:
+  posts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # No requirements.txt here either: card, reel, clips and posts are
+      # stdlib plus Playwright. pandas is not in this path and installing it
+      # would double the job for nothing.
+      - name: Install Chromium and pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright pytest pillow
+          python -m playwright install --with-deps chromium
+
+      - name: Test
+        run: python -m pytest tests/test_clips.py tests/test_card.py tests/test_reel.py -q
+
+      # The footer mark comes from assets/logo/mark.png automatically.
+      # --logo only needs passing to override it.
+      - name: Build
+        id: build
+        run: |
+          set -o pipefail
+          python -u -m xdawg posts \
+            --window "${{ inputs.window }}" \
+            ${{ inputs.key && format('--key {0}', inputs.key) || '' }} \
+            --top "${{ inputs.top }}" \
+            --handle "${{ inputs.handle }}" \
+            --out posts \
+            --summary posts-summary.md \
+            ${{ inputs.no_video == true && '--no-video' || '' }} \
+            2>&1 | tee posts.log
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Posts — ${{ inputs.window }} ${{ inputs.key || '(latest)' }}"
+            echo
+            cat posts-summary.md 2>/dev/null || {
+              echo 'The run produced no table. Last 40 lines:'
+              echo '```'
+              tail -40 posts.log 2>/dev/null || echo '(no log)'
+              echo '```'
+            }
+            echo
+            echo '### Files'
+            echo '```'
+            ls -lh posts 2>/dev/null || echo '(no posts directory)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: posts-${{ inputs.window }}-${{ inputs.key || 'latest' }}
+          path: |
+            posts/
+            posts.log
+            posts-summary.md
+          retention-days: 14
+          if-no-files-found: warn

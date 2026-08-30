@@ -6,3 +6,7 @@
 _to_delete/
 /*.yml
 /SPEC.md
+
+# Python bytecode. Swept into a commit once already.
+__pycache__/
+*.pyc
