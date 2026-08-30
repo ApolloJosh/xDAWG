@@ -602,3 +602,31 @@ def test_a_thread_can_mix_a_video_winner_with_image_runners_up(monkeypatch):
     assert res[1].record["embed"]["$type"] == "app.bsky.embed.images"
     # And the image reply still hangs off the video root.
     assert res[1].record["reply"]["root"]["uri"] == "at://x/1"
+
+
+# --------------------------------------------------------------------------
+# saying why a reel became a card
+# --------------------------------------------------------------------------
+
+def test_an_item_that_fell_back_carries_the_reason_into_the_report():
+    # The first version swallowed every failure into a bare except and
+    # posted stills, which is indistinguishable from being *asked* for
+    # stills. That cost a live run and an hour of not knowing why.
+    out = bs.prepare([bs.Item(text="a", image=b"png",
+                              note="ffmpeg is not installed on this machine")])
+    md = bs.report(out, dry_run=True)
+    assert "no reel: ffmpeg is not installed" in md
+    assert "Why the rest are cards:" in md
+    assert "0/1 with video" in md
+
+
+def test_the_report_counts_videos_even_on_a_dry_run():
+    out = bs.prepare([bs.Item(text="a", video=b"\x00" * 1000),
+                      bs.Item(text="b", image=b"png", note="no clip resolved")])
+    assert "1/2 with video" in bs.report(out, dry_run=True)
+
+
+def test_a_thread_with_every_reel_intact_says_nothing_about_cards():
+    md = bs.report(bs.prepare([bs.Item(text="a", video=b"\x00" * 10)]),
+                   dry_run=True)
+    assert "Why the rest are cards" not in md

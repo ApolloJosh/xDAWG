@@ -381,6 +381,10 @@ class Item:
     video: bytes | None = None
     aspect: tuple[int, int] = (1080, 1920)
     name: str = "reel.mp4"
+    # Why this is a card rather than a reel. Carried so the report can say
+    # so: a thread that quietly posts stills looks identical to a thread
+    # that was asked for stills, and the difference is the whole question.
+    note: str = ""
 
 
 @dataclass
@@ -392,6 +396,7 @@ class Result:
     bytes: int = 0
     mime: str = ""
     kind: str = "text"          # text | image | video
+    note: str = ""
     error: str = ""
     record: dict = field(default_factory=dict)
 
@@ -409,7 +414,7 @@ def prepare(items: list[Item]) -> list[Result]:
     """
     out = []
     for it in items:
-        r = Result(text=it.text)
+        r = Result(text=it.text, note=it.note)
         r.record = post_record(it.text)
         if it.video:
             r.kind, r.bytes, r.mime = "video", len(it.video), "video/mp4"
@@ -476,6 +481,9 @@ def report(results: list[Result], *, dry_run: bool) -> str:
             size = (f", {r.kind} {r.bytes/1e6:.1f} MB" if r.kind == "video"
                     else f", {r.kind} {r.bytes/1000:.0f} KB {r.mime}")
         lines.append(f"### {who} — {graphemes(r.text)}/300 graphemes{size}")
+        if r.note:
+            lines.append("")
+            lines.append(f"_no reel: {r.note}_")
         lines.append("")
         lines.append("```")
         lines.append(r.text)
@@ -490,8 +498,13 @@ def report(results: list[Result], *, dry_run: bool) -> str:
             lines.append(f"**failed: {r.error}**")
         lines.append("")
     ok = sum(1 for r in results if r.ok)
-    if not dry_run:
-        lines.append(f"**{ok}/{len(results)} posted.**")
+    vids = sum(1 for r in results if r.kind == "video")
+    lines.append(f"**{vids}/{len(results)} with video"
+                 + (f", {ok}/{len(results)} posted.**" if not dry_run else ".**"))
+    stuck = {r.note for r in results if r.note}
+    if stuck:
+        lines.append("")
+        lines.append("Why the rest are cards: " + "; ".join(sorted(stuck)))
     return "\n".join(lines)
 
 

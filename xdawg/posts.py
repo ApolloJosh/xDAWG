@@ -301,10 +301,21 @@ def thread_items(awards_path: str | Path, *, window: str = "day",
             row, out / f"{base}.png", window=window, key=key, layout="post",
             headshot=shot, logo=logo, handle=handle, awards=awards)
 
-        clip = None
-        if video:
+        # Why this man ends up a card rather than a reel, in words. The
+        # first version of this swallowed every failure into a bare except
+        # and posted stills, which is indistinguishable from being asked
+        # for stills -- and left nobody able to say which had happened.
+        note, clip = "", None
+        if not video:
+            note = "video not requested"
+        elif not reel_mod.have_ffmpeg():
+            note = "ffmpeg is not installed on this machine"
+        else:
             res = clips_mod.resolve(row, out_dir=out)
-            clip = res.path if res.ok else None
+            if res.ok:
+                clip = res.path
+            else:
+                note = res.error or "no clip resolved"
 
         if clip:
             reel_png, box = card_mod.render_card(
@@ -319,11 +330,11 @@ def thread_items(awards_path: str | Path, *, window: str = "day",
                                   aspect=card_mod.REEL,
                                   name=f"{base}.mp4"))
                 continue
-            except Exception:  # noqa: BLE001 -- fall back to the card
-                pass
+            except Exception as e:  # noqa: BLE001 -- a card still posts
+                note = f"{type(e).__name__}: {e}"
 
         items.append(Item(text=text, image=Path(still_png).read_bytes(),
-                          alt=alt))
+                          alt=alt, note=note))
     return items, key
 
 

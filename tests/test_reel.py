@@ -224,3 +224,35 @@ def test_the_card_alone_is_still_a_postable_video(tmp_path):
     p = reel.probe(out)
     assert (p.width, p.height) == (1080, 1920)
     assert 4.5 < p.duration < 5.5
+
+
+# --------------------------------------------------------------------------
+# a missing ffmpeg
+# --------------------------------------------------------------------------
+
+def test_have_ffmpeg_answers_honestly(monkeypatch):
+    monkeypatch.setattr(reel.shutil, "which", lambda n: "/usr/bin/" + n)
+    assert reel.have_ffmpeg() is True
+    monkeypatch.setattr(reel.shutil, "which", lambda n: None)
+    assert reel.have_ffmpeg() is False
+
+
+def test_a_missing_ffmpeg_says_so_rather_than_blaming_the_clip(tmp_path,
+                                                              monkeypatch):
+    # probe() swallows its own failures and returns an empty Probe, so
+    # without the explicit check a missing binary reported as "none of the
+    # clips are readable video" -- false, and it points the next person at
+    # Savant instead of at the runner.
+    monkeypatch.setattr(reel.shutil, "which", lambda n: None)
+    with pytest.raises(reel.FFmpegError, match="not on PATH"):
+        reel.compose("c.png", BOX, ["a.mp4"], tmp_path / "r.mp4")
+    with pytest.raises(reel.FFmpegError, match="not on PATH"):
+        reel.still("c.png", tmp_path / "s.mp4")
+
+
+def test_a_missing_binary_names_itself(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError(2, "No such file or directory", "ffmpeg")
+    monkeypatch.setattr(reel.subprocess, "run", boom)
+    with pytest.raises(reel.FFmpegError, match="is not installed"):
+        reel._run(["ffmpeg", "-version"])

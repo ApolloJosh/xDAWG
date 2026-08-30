@@ -59,6 +59,17 @@ jobs:
       # No requirements.txt here either: card, reel, clips and posts are
       # stdlib plus Playwright. pandas is not in this path and installing it
       # would double the job for nothing.
+      # ffmpeg is NOT on a GitHub runner by default, and the reel is built
+      # by shelling out to it. Without this the clip chain works, the
+      # compose fails, and the thread posts stills -- which is exactly what
+      # happened the first time video was tried.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+
       - name: Install Chromium and pytest
         run: |
           python -m pip install --upgrade pip

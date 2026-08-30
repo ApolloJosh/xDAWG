@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,8 +33,25 @@ class FFmpegError(RuntimeError):
     pass
 
 
+def have_ffmpeg() -> bool:
+    """Is there an ffmpeg to shell out to?
+
+    Worth asking up front rather than discovering it as a FileNotFoundError
+    three layers down, where it looks like any other reason a clip did not
+    turn into a reel. A CI runner is the case that matters: Chromium gets
+    installed on purpose and ffmpeg does not come along with it.
+    """
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
 def _run(args: list[str]) -> str:
-    p = subprocess.run(args, capture_output=True, text=True)
+    try:
+        p = subprocess.run(args, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise FFmpegError(
+            f"{args[0]} is not installed. Reels need ffmpeg and ffprobe on "
+            f"PATH; a CI runner has neither unless the job installs them."
+        ) from None
     if p.returncode != 0:
         # ffmpeg's real complaint is always in the last few lines; the rest
         # is a banner nobody has ever read.
@@ -147,6 +165,13 @@ def compose(card: str | Path, box: tuple[int, int, int, int],
             canvas: tuple[int, int] = (1080, 1920),
             max_seconds: float = 60.0, tail: float = 0.6) -> Path:
     """Burn one card and its clips into a finished vertical video."""
+    # Asked before probing. probe() swallows its own failures and returns an
+    # empty Probe, so without this a missing ffmpeg reports as "none of the
+    # clips are readable video" -- which is false, and points the next
+    # person at Savant instead of at the runner.
+    if not have_ffmpeg():
+        raise FFmpegError("ffmpeg and ffprobe are not on PATH; cannot build "
+                          "a reel")
     usable = [c for c in clips if probe(c).ok]
     if not usable:
         raise FFmpegError("none of the clips are readable video")
@@ -166,6 +191,8 @@ def still(card: str | Path, out: str | Path, *, seconds: float = 6.0,
     that goes out as a still beats a post that does not go out, and a
     silent six seconds is a legitimate feed object rather than an error.
     """
+    if not have_ffmpeg():
+        raise FFmpegError("ffmpeg is not on PATH; cannot render a still")
     cw, ch = canvas
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -177,6 +177,18 @@ def main(argv: list[str] | None = None) -> int:
             print("[xdawg] that window has no board. Nothing to do.")
             return 1
 
+        # Say what each man got and why, before anything is sent. A run that
+        # silently posts five cards when it was asked for reels is the
+        # failure this exists to make impossible to miss.
+        vids = sum(1 for i in items if i.video)
+        print(f"[xdawg] {vids}/{len(items)} have a reel")
+        for n, i in enumerate(items, 1):
+            what = f"{len(i.video)/1e6:.1f} MB reel" if i.video else "card"
+            print(f"[xdawg]   {n}. {what}" + (f" — {i.note}" if i.note else ""))
+        if not a.no_video and not vids:
+            print("[xdawg] nothing resolved to video. The reasons are above; "
+                  "if they all say ffmpeg, the machine needs it installed.")
+
         from .posts import staleness
 
         age = staleness(a.window, key)
