@@ -268,12 +268,17 @@ def report(posts: list[Post]) -> str:
 def thread_items(awards_path: str | Path, *, window: str = "day",
                  key: str | None = None, top: int = 5,
                  out_dir: str | Path = "posts", handle: str = "@XDAWGMLB",
-                 logo: bytes | None = None) -> tuple[list, str]:
-    """The day's winners as a thread: winner first, runners-up beneath.
+                 logo: bytes | None = None,
+                 video: bool = True) -> tuple[list, str]:
+    """The window's winners as a thread: winner first, runners-up beneath.
 
-    Cards only -- no clips. A thread of five graphics is the shape we are
-    testing, and fetching five videos to not use them would put ten minutes
-    of MLB traffic in front of every dry run.
+    Each man gets a reel if Savant has video of his moment, and the still
+    card if it does not. Never a six-second static video: a card that does
+    not move is a picture, and posting it as a video buys nothing and costs
+    the reader a tap.
+
+    `video=False` skips the clip chain entirely -- no schedule lookups, no
+    feeds, no downloads. That is the mode for looking at wording.
     """
     from .bluesky import Item
 
@@ -289,12 +294,36 @@ def thread_items(awards_path: str | Path, *, window: str = "day",
         base = slug(f"{rank:02d}", key, row.get("team", ""),
                     card_mod.display_name(row.get("name", "")))
         shot = card_mod.fetch_headshot(row["id"]) if row.get("id") else None
-        png, _ = card_mod.render_card(
+        text = bluesky_text(row, window, key, awards)
+        alt = alt_text(row, window, key, awards)
+
+        still_png, _ = card_mod.render_card(
             row, out / f"{base}.png", window=window, key=key, layout="post",
             headshot=shot, logo=logo, handle=handle, awards=awards)
-        items.append(Item(text=bluesky_text(row, window, key, awards),
-                          image=Path(png).read_bytes(),
-                          alt=alt_text(row, window, key, awards)))
+
+        clip = None
+        if video:
+            res = clips_mod.resolve(row, out_dir=out)
+            clip = res.path if res.ok else None
+
+        if clip:
+            reel_png, box = card_mod.render_card(
+                row, out / f"{base}-reel-card.png", window=window, key=key,
+                layout="reel", headshot=shot, logo=logo, handle=handle,
+                awards=awards)
+            try:
+                mp4 = reel_mod.compose(reel_png, box, [clip],
+                                       out / f"{base}.mp4")
+                items.append(Item(text=text, alt=alt,
+                                  video=Path(mp4).read_bytes(),
+                                  aspect=card_mod.REEL,
+                                  name=f"{base}.mp4"))
+                continue
+            except Exception:  # noqa: BLE001 -- fall back to the card
+                pass
+
+        items.append(Item(text=text, image=Path(still_png).read_bytes(),
+                          alt=alt))
     return items, key
 
 

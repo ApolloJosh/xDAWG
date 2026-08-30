@@ -46,6 +46,15 @@ from pathlib import Path
 HOST = "https://bsky.social"
 COLLECTION = "app.bsky.feed.post"
 
+# Video does not go to the PDS like an image does. It goes to a separate
+# service that transcodes it and hands back a blob ref, and reaching that
+# service needs a *service auth* token rather than the session's own -- a
+# short-lived JWT scoped to one audience and one method. See upload_video.
+VIDEO_HOST = "https://video.bsky.app"
+VIDEO_DID = "did:web:video.bsky.app"
+VIDEO_MAX = 100_000_000      # app.bsky.embed.video, video.maxSize
+VIDEO_MAX_SECONDS = 180
+
 # app.bsky.embed.images caps a blob at 1,000,000 bytes. The budget here is
 # under it on purpose: the limit is enforced on the encoded blob and a card
 # that squeaks in at 999,000 is a card that fails the day somebody's name
@@ -195,9 +204,14 @@ def now_iso() -> str:
 
 
 def post_record(text: str, *, images: list[dict] | None = None,
-                reply: dict | None = None, langs: tuple[str, ...] = ("en",),
+                video: dict | None = None, reply: dict | None = None,
+                langs: tuple[str, ...] = ("en",),
                 created_at: str | None = None) -> dict:
     """The app.bsky.feed.post record. Pure -- builds it, sends nothing."""
+    if images and video:
+        # `embed` is one field, not a list of them. Sending both would
+        # silently drop one, and which one would depend on dict ordering.
+        raise BlueskyError("a post carries images or a video, not both")
     rec: dict = {
         "$type": COLLECTION,
         "text": text,
@@ -207,7 +221,9 @@ def post_record(text: str, *, images: list[dict] | None = None,
     f = facets(text)
     if f:
         rec["facets"] = f
-    if images:
+    if video:
+        rec["embed"] = video
+    elif images:
         rec["embed"] = {"$type": "app.bsky.embed.images",
                         "images": images[:MAX_IMAGES]}
     if reply:
@@ -243,10 +259,29 @@ class Session:
     handle: str = ""
     access_jwt: str = ""
     host: str = HOST
+    did_doc: dict = field(default_factory=dict)
 
     @property
     def auth(self) -> dict:
         return {"Authorization": f"Bearer {self.access_jwt}"}
+
+    @property
+    def pds(self) -> str:
+        """This account's PDS host, from its own DID document.
+
+        Read rather than assumed: Bluesky spreads accounts across a fleet
+        (this one is on poisonpie.us-west) and an account can be migrated.
+        A hardcoded host works right up until it does not.
+        """
+        for svc in (self.did_doc or {}).get("service", []) or []:
+            if svc.get("type") == "AtprotoPersonalDataServer":
+                return str(svc.get("serviceEndpoint", ""))
+        return ""
+
+    @property
+    def pds_did(self) -> str:
+        host = urllib.parse.urlparse(self.pds).netloc
+        return f"did:web:{host}" if host else ""
 
 
 def _call(url: str, *, data: bytes | None = None, headers: dict | None = None,
@@ -264,6 +299,13 @@ def _call(url: str, *, data: bytes | None = None, headers: dict | None = None,
     except (urllib.error.URLError, TimeoutError) as e:
         raise BlueskyError(f"{urllib.parse.urlparse(url).path}: {e}") from None
     return json.loads(body) if body else {}
+
+
+def _query(session: Session, path: str, params: dict, *,
+           host: str | None = None, token: str | None = None) -> dict:
+    url = f"{host or session.host}/xrpc/{path}?{urllib.parse.urlencode(params)}"
+    headers = {"Authorization": f"Bearer {token}"} if token else dict(session.auth)
+    return _call(url, headers=headers, method="GET")
 
 
 def _json_call(session_or_host, path: str, payload: dict,
@@ -296,7 +338,8 @@ def login(handle: str, app_password: str, host: str = HOST) -> Session:
     out = _json_call(host, "com.atproto.server.createSession",
                      {"identifier": handle, "password": app_password})
     return Session(did=out["did"], handle=out.get("handle", handle),
-                   access_jwt=out["accessJwt"], host=host)
+                   access_jwt=out["accessJwt"], host=host,
+                   did_doc=out.get("didDoc") or {})
 
 
 def upload_blob(session: Session, data: bytes, mime: str) -> dict:
@@ -325,10 +368,19 @@ def post_url(handle: str, uri: str) -> str:
 
 @dataclass
 class Item:
-    """One post to be made: its text, and the card that goes with it."""
+    """One post to be made, and whatever goes with it.
+
+    A reel if we have one, otherwise the still card. Never both: a post has
+    one embed. A winner whose moment Savant has no clip for still gets a
+    post -- it just gets the graphic instead of the video, which is a better
+    outcome than six silent seconds of a static card.
+    """
     text: str
     image: bytes | None = None
     alt: str = ""
+    video: bytes | None = None
+    aspect: tuple[int, int] = (1080, 1920)
+    name: str = "reel.mp4"
 
 
 @dataclass
@@ -339,6 +391,7 @@ class Result:
     url: str = ""
     bytes: int = 0
     mime: str = ""
+    kind: str = "text"          # text | image | video
     error: str = ""
     record: dict = field(default_factory=dict)
 
@@ -358,7 +411,13 @@ def prepare(items: list[Item]) -> list[Result]:
     for it in items:
         r = Result(text=it.text)
         r.record = post_record(it.text)
-        if it.image:
+        if it.video:
+            r.kind, r.bytes, r.mime = "video", len(it.video), "video/mp4"
+            if len(it.video) > VIDEO_MAX:
+                r.error = (f"video is {len(it.video)/1e6:.1f} MB; the limit "
+                           f"is {VIDEO_MAX/1e6:.0f} MB")
+        elif it.image:
+            r.kind = "image"
             try:
                 data, mime = fit_image(it.image)
                 r.bytes, r.mime = len(data), mime
@@ -382,12 +441,16 @@ def publish_thread(session: Session, items: list[Item], *,
         if r.error:
             continue
         try:
-            images = []
-            if it.image:
+            images, video = [], None
+            if it.video:
+                job = upload_video(session, it.video, it.name)
+                blob = await_video(session, job["jobId"])
+                video = video_embed(blob, it.alt, it.aspect)
+            elif it.image:
                 data, mime = fit_image(it.image)
                 blob = upload_blob(session, data, mime)
                 images.append(image_item(blob, it.alt, image_size(it.image)))
-            rec = post_record(it.text, images=images or None,
+            rec = post_record(it.text, images=images or None, video=video,
                               reply=reply_ref(root, parent) if root else None)
             r.record = rec
             ref = create_record(session, rec)
@@ -408,8 +471,11 @@ def report(results: list[Result], *, dry_run: bool) -> str:
     lines = [head, ""]
     for i, r in enumerate(results):
         who = "root" if i == 0 else f"reply {i}"
-        lines.append(f"### {who} — {graphemes(r.text)}/300 graphemes"
-                     + (f", image {r.bytes/1000:.0f} KB {r.mime}" if r.bytes else ""))
+        size = ""
+        if r.bytes:
+            size = (f", {r.kind} {r.bytes/1e6:.1f} MB" if r.kind == "video"
+                    else f", {r.kind} {r.bytes/1000:.0f} KB {r.mime}")
+        lines.append(f"### {who} — {graphemes(r.text)}/300 graphemes{size}")
         lines.append("")
         lines.append("```")
         lines.append(r.text)
@@ -427,3 +493,105 @@ def report(results: list[Result], *, dry_run: bool) -> str:
     if not dry_run:
         lines.append(f"**{ok}/{len(results)} posted.**")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# video
+# --------------------------------------------------------------------------
+
+def service_auth(session: Session, aud: str, lxm: str,
+                 minutes: int = 30) -> str:
+    """A short-lived token scoped to one audience and one method.
+
+    The session's own JWT is not accepted by the video service: it is issued
+    for the PDS, and video.bsky.app is a different party. This asks the PDS
+    to mint a token that names exactly who may present it and exactly which
+    method it may call, which is why the `lxm` for an upload is
+    `com.atproto.repo.uploadBlob` and not `uploadVideo` -- the video service
+    is being authorised to write a blob into this account's repo.
+    """
+    exp = int(time.time()) + minutes * 60
+    out = _query(session, "com.atproto.server.getServiceAuth",
+                 {"aud": aud, "lxm": lxm, "exp": exp})
+    return out["token"]
+
+
+def upload_limits(session: Session) -> dict:
+    """What this account is allowed to upload today.
+
+    Asked before every upload rather than assumed, because the two things
+    that stop a video -- an unverified email, and the daily quota -- both
+    report here in a sentence a human can act on, and both otherwise
+    surface as an opaque failure after the file has been sent.
+    """
+    token = service_auth(session, VIDEO_DID, "app.bsky.video.getUploadLimits")
+    return _query(session, "app.bsky.video.getUploadLimits", {},
+                  host=VIDEO_HOST, token=token)
+
+
+def upload_video(session: Session, data: bytes, name: str) -> dict:
+    """Hand the file to the video service. Returns a jobStatus, not a blob."""
+    if len(data) > VIDEO_MAX:
+        raise BlueskyError(f"video is {len(data)/1e6:.1f} MB; the limit is "
+                           f"{VIDEO_MAX/1e6:.0f} MB")
+    if not session.pds_did:
+        raise BlueskyError("cannot find this account's PDS in its DID document")
+    token = service_auth(session, session.pds_did, "com.atproto.repo.uploadBlob")
+    url = (f"{VIDEO_HOST}/xrpc/app.bsky.video.uploadVideo"
+           f"?{urllib.parse.urlencode({'did': session.did, 'name': name})}")
+    out = _call(url, data=data, timeout=600,
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "video/mp4"})
+    return out.get("jobStatus", out)
+
+
+def job_status(session: Session, job_id: str) -> dict:
+    token = service_auth(session, VIDEO_DID, "app.bsky.video.getJobStatus")
+    out = _query(session, "app.bsky.video.getJobStatus", {"jobId": job_id},
+                 host=VIDEO_HOST, token=token)
+    return out.get("jobStatus", out)
+
+
+def job_done(status: dict) -> bool:
+    return str(status.get("state", "")).upper().endswith("COMPLETED")
+
+
+def job_failed(status: dict) -> bool:
+    state = str(status.get("state", "")).upper()
+    return "FAILED" in state or bool(status.get("error"))
+
+
+def await_video(session: Session, job_id: str, *, timeout: float = 420,
+                poll: float = 3.0) -> dict:
+    """Wait for the transcode and return the blob it produced.
+
+    Transcoding is somebody else's queue, so this waits rather than assumes.
+    A job that fails says so in `error`/`message`; a job that never finishes
+    times out rather than hanging the run behind an unbounded loop.
+    """
+    deadline = time.time() + timeout
+    last: dict = {}
+    while time.time() < deadline:
+        last = job_status(session, job_id)
+        if job_done(last):
+            blob = last.get("blob")
+            if not blob:
+                raise BlueskyError("the job completed but returned no blob")
+            return blob
+        if job_failed(last):
+            raise BlueskyError(f"video job failed: "
+                               f"{last.get('error') or ''} "
+                               f"{last.get('message') or ''}".strip())
+        time.sleep(poll)
+    raise BlueskyError(f"video job {job_id} still "
+                       f"{last.get('state', 'unknown')} after {timeout:.0f}s")
+
+
+def video_embed(blob: dict, alt: str, size: tuple[int, int]) -> dict:
+    """app.bsky.embed.video. alt is capped at 1000 graphemes by the lexicon."""
+    w, h = size
+    embed = {"$type": "app.bsky.embed.video", "video": blob,
+             "aspectRatio": {"width": int(w), "height": int(h)}}
+    if alt:
+        embed["alt"] = alt[:1000]
+    return embed

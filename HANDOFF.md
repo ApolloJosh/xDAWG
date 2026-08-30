@@ -576,11 +576,49 @@ a card that squeaks in at 999,000 is a card that fails the day a name needs
 one more glyph. Cards land at about 130 KB, so the JPEG ladder in
 `fit_image` is a fallback that currently never fires.
 
-Video is next and is a different, fiddlier path: `com.atproto.server.
-getServiceAuth` (aud = the PDS DID, lxm = `com.atproto.repo.uploadBlob`),
-then `app.bsky.video.uploadVideo` against `video.bsky.app`, then poll
-`getJobStatus` until the blob comes back. Limits are 100 MB, three minutes,
-25 videos a day. Not built yet.
+**Video.** Built. A winner gets his reel when Savant has a clip of the
+moment and the still card when it does not — never a six-second static
+video, which is a picture that costs the reader a tap. A thread mixes the
+two freely; the image replies still hang off the video root.
+
+The path is nothing like the image one, and the differences are all
+security-shaped:
+
+- Video does not go to the PDS. It goes to `video.bsky.app`, which is a
+  different party, so the session's own JWT is not accepted. Each call
+  needs a **service auth** token from `com.atproto.server.getServiceAuth`,
+  scoped to one audience and one method.
+- For the *upload* the audience is **this account's PDS DID** and the lxm
+  is **`com.atproto.repo.uploadBlob`**, not `uploadVideo` — what is being
+  authorised is the video service writing a blob into the account's repo.
+  For `getJobStatus` the audience is `did:web:video.bsky.app` instead.
+- The PDS is read from the session's own DID document rather than
+  hardcoded. This account currently lives on
+  `poisonpie.us-west.host.bsky.network`; Bluesky spreads accounts across a
+  fleet and an account can be migrated.
+- Upload returns a **job, not a blob**. Transcoding is somebody else's
+  queue, so `await_video` polls until `JOB_STATE_COMPLETED`, raises with
+  the service's own words on failure, and times out rather than hanging the
+  run behind an unbounded loop. A job that completes with no blob is an
+  error, not a silent post.
+
+**Video requires a verified account email.** That and the daily quota are
+the two things that stop an upload, and both report through
+`app.bsky.video.getUploadLimits` as `canUpload:false` with a sentence a
+human can act on. `publish` asks *before* sending anything, so the failure
+arrives in one line instead of after a 10 MB upload.
+
+Limits: 100 MB and mp4 per `app.bsky.embed.video`; three minutes; a daily
+video count the API will tell you rather than one worth hardcoding. Reels
+run 0.3–2 MB for six to eleven seconds, so the size cap is not a
+constraint we will meet. `alt` is capped at 1000 graphemes by the lexicon
+and is truncated there. Captions are supported by the lexicon (up to 20
+WebVTT tracks) and are not generated — there is no transcript of broadcast
+audio to make one from.
+
+A post carries images **or** a video, never both: `embed` is one field, and
+sending both would drop one depending on dict ordering. `post_record`
+raises rather than picking.
 
 ## Past seasons
 

@@ -116,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
                           "'DAWG of the Day' reads as current.")
     pub.add_argument("--allow-stale", action="store_true",
                      help="post an old window anyway. For backfilling.")
+    pub.add_argument("--no-video", action="store_true",
+                     help="cards only. Skips the clip chain entirely, so a "
+                          "wording check costs no MLB traffic.")
 
     sub.add_parser("serve", help="serve the site on localhost:8000")
 
@@ -169,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         logo = Path(a.logo).read_bytes() if a.logo else None
         items, key = thread_items(a.awards, window=a.window, key=a.key,
                                   top=a.top, out_dir=a.out, handle=a.handle,
-                                  logo=logo)
+                                  logo=logo, video=not a.no_video)
         if not items:
             print("[xdawg] that window has no board. Nothing to do.")
             return 1
@@ -209,6 +212,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[xdawg] login failed: {e}")
             return 2
         print(f"[xdawg] posting as {session.handle} ({session.did})")
+        if any(i.video for i in items):
+            # Both things that stop a video -- an unverified email and the
+            # daily quota -- report here in a sentence, and otherwise
+            # surface as an opaque failure after the file has been sent.
+            try:
+                lim = bluesky.upload_limits(session)
+                print(f"[xdawg] video: canUpload={lim.get('canUpload')} "
+                      f"remaining={lim.get('remainingDailyVideos')} videos / "
+                      f"{(lim.get('remainingDailyBytes') or 0)/1e6:.0f} MB"
+                      + (f" — {lim['message']}" if lim.get("message") else ""))
+                if lim.get("canUpload") is False:
+                    print("[xdawg] the account cannot upload video right now. "
+                          "Verify the account email in Bluesky settings, or "
+                          "wait for the daily quota. Re-run with --no-video "
+                          "to post the cards instead.")
+                    return 2
+            except bluesky.BlueskyError as e:
+                print(f"[xdawg] could not read the video limits: {e}")
         results = bluesky.publish_thread(session, items)
         md = bluesky.report(results, dry_run=False)
         print("\n" + md)

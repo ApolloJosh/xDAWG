@@ -397,3 +397,208 @@ def test_an_unparseable_key_is_not_treated_as_ancient():
     # simply failed to read, which is a worse failure than not checking.
     assert posts.staleness("day", "whenever", TODAY) == 0
     assert posts.staleness("month", "", TODAY) == 0
+
+
+# --------------------------------------------------------------------------
+# video
+# --------------------------------------------------------------------------
+
+DID_DOC = {"service": [
+    {"id": "#atproto_pds", "type": "AtprotoPersonalDataServer",
+     "serviceEndpoint": "https://poisonpie.us-west.host.bsky.network"},
+    {"id": "#other", "type": "SomethingElse", "serviceEndpoint": "https://nope"},
+]}
+
+
+def _sess(**kw):
+    return bs.Session(did="did:plc:kw3", handle="xdawgmlb.bsky.social",
+                      access_jwt="jwt", did_doc=DID_DOC, **kw)
+
+
+def test_the_pds_is_read_from_the_did_document():
+    # Not hardcoded: accounts are spread across a fleet and can be migrated.
+    s = _sess()
+    assert s.pds == "https://poisonpie.us-west.host.bsky.network"
+    assert s.pds_did == "did:web:poisonpie.us-west.host.bsky.network"
+
+
+def test_an_account_with_no_pds_in_its_doc_reports_empty_rather_than_guessing():
+    assert bs.Session().pds_did == ""
+    assert bs.Session(did_doc={"service": []}).pds_did == ""
+
+
+def test_uploading_video_asks_for_a_token_scoped_to_the_repo_write(monkeypatch):
+    # The lxm is uploadBlob, not uploadVideo: what is being authorised is the
+    # video service writing a blob into this account's repo.
+    seen = {}
+
+    def fake_query(session, path, params, **kw):
+        seen[path] = params
+        return {"token": "svc-token"}
+
+    def fake_call(url, **kw):
+        seen["upload_url"] = url
+        seen["upload_auth"] = kw["headers"]["Authorization"]
+        seen["upload_mime"] = kw["headers"]["Content-Type"]
+        return {"jobStatus": {"jobId": "j1", "state": "JOB_STATE_CREATED"}}
+
+    monkeypatch.setattr(bs, "_query", fake_query)
+    monkeypatch.setattr(bs, "_call", fake_call)
+
+    job = bs.upload_video(_sess(), b"\x00" * 100, "reel.mp4")
+    assert job["jobId"] == "j1"
+    auth = seen["com.atproto.server.getServiceAuth"]
+    assert auth["aud"] == "did:web:poisonpie.us-west.host.bsky.network"
+    assert auth["lxm"] == "com.atproto.repo.uploadBlob"
+    assert auth["exp"] > 0
+    assert seen["upload_auth"] == "Bearer svc-token"
+    assert seen["upload_mime"] == "video/mp4"
+    assert "did=did%3Aplc%3Akw3" in seen["upload_url"]
+    assert "name=reel.mp4" in seen["upload_url"]
+
+
+def test_the_job_status_token_is_scoped_to_the_video_service(monkeypatch):
+    seen = {}
+
+    def fake_query(session, path, params, **kw):
+        seen.setdefault(path, []).append((params, kw))
+        if path.endswith("getServiceAuth"):
+            return {"token": "svc"}
+        return {"jobStatus": {"jobId": "j1", "state": "JOB_STATE_COMPLETED",
+                              "blob": {"$type": "blob"}}}
+
+    monkeypatch.setattr(bs, "_query", fake_query)
+    bs.job_status(_sess(), "j1")
+    auth = seen["com.atproto.server.getServiceAuth"][0][0]
+    assert auth["aud"] == "did:web:video.bsky.app"
+    assert auth["lxm"] == "app.bsky.video.getJobStatus"
+    _, kw = seen["app.bsky.video.getJobStatus"][0]
+    assert kw["host"] == bs.VIDEO_HOST      # not the PDS
+
+
+def test_a_video_over_the_limit_is_refused_before_it_is_sent(monkeypatch):
+    monkeypatch.setattr(bs, "_query", lambda *a, **k: {"token": "t"})
+    called = {"n": 0}
+    monkeypatch.setattr(bs, "_call", lambda *a, **k: called.__setitem__("n", 1))
+    with pytest.raises(bs.BlueskyError, match="limit"):
+        bs.upload_video(_sess(), b"x" * (bs.VIDEO_MAX + 1), "big.mp4")
+    assert called["n"] == 0, "it sent the file anyway"
+
+
+def test_the_limit_matches_the_lexicon():
+    assert bs.VIDEO_MAX == 100_000_000
+
+
+def test_awaiting_a_video_polls_until_the_blob_arrives(monkeypatch):
+    states = [{"state": "JOB_STATE_CREATED"},
+              {"state": "JOB_STATE_ENCODING", "progress": 40},
+              {"state": "JOB_STATE_COMPLETED", "blob": {"$type": "blob"}}]
+    monkeypatch.setattr(bs, "job_status", lambda s, j: states.pop(0))
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    assert bs.await_video(_sess(), "j1") == {"$type": "blob"}
+
+
+def test_a_failed_job_raises_with_the_service_s_own_words(monkeypatch):
+    monkeypatch.setattr(bs, "job_status", lambda s, j: {
+        "state": "JOB_STATE_FAILED", "error": "unsupported_codec",
+        "message": "could not read the video"})
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    with pytest.raises(bs.BlueskyError, match="unsupported_codec"):
+        bs.await_video(_sess(), "j1")
+
+
+def test_a_job_that_never_finishes_times_out(monkeypatch):
+    monkeypatch.setattr(bs, "job_status", lambda s, j: {"state": "JOB_STATE_ENCODING"})
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    clock = iter([0, 1, 2, 999])
+    monkeypatch.setattr(bs.time, "time", lambda: next(clock))
+    with pytest.raises(bs.BlueskyError, match="still"):
+        bs.await_video(_sess(), "j1", timeout=10)
+
+
+def test_a_completed_job_with_no_blob_is_an_error_not_a_silent_post(monkeypatch):
+    monkeypatch.setattr(bs, "job_status", lambda s, j: {"state": "JOB_STATE_COMPLETED"})
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    with pytest.raises(bs.BlueskyError, match="no blob"):
+        bs.await_video(_sess(), "j1")
+
+
+def test_the_video_embed_carries_alt_and_an_aspect_ratio():
+    e = bs.video_embed({"$type": "blob"}, "a reel", (1080, 1920))
+    assert e["$type"] == "app.bsky.embed.video"
+    assert e["aspectRatio"] == {"width": 1080, "height": 1920}
+    assert e["alt"] == "a reel"
+
+
+def test_video_alt_is_capped_at_the_lexicon_s_thousand_graphemes():
+    e = bs.video_embed({"$type": "blob"}, "z" * 5000, (1080, 1920))
+    assert len(e["alt"]) == 1000
+
+
+def test_a_post_carries_images_or_a_video_but_never_both():
+    # `embed` is one field. Sending both would drop one silently, and which
+    # one would depend on dict ordering.
+    with pytest.raises(bs.BlueskyError, match="not both"):
+        bs.post_record("x", images=[{"a": 1}],
+                       video={"$type": "app.bsky.embed.video"})
+
+
+def test_a_video_post_embeds_the_video_and_not_an_images_block():
+    rec = bs.post_record("x", video={"$type": "app.bsky.embed.video"})
+    assert rec["embed"]["$type"] == "app.bsky.embed.video"
+
+
+def test_a_dry_run_reports_a_video_without_uploading_it():
+    out = bs.prepare([bs.Item(text="root", video=b"\x00" * 2_000_000)])
+    assert out[0].kind == "video"
+    assert out[0].bytes == 2_000_000
+    assert not out[0].ok
+    assert "video 2.0 MB" in bs.report(out, dry_run=True)
+
+
+def test_a_dry_run_flags_a_video_that_is_too_big_to_post():
+    out = bs.prepare([bs.Item(text="x", video=b"\x00" * (bs.VIDEO_MAX + 1))])
+    assert "limit" in out[0].error
+
+
+def test_publishing_a_video_item_takes_the_video_path(monkeypatch):
+    monkeypatch.setattr(bs, "upload_video", lambda s, d, n: {"jobId": "j1"})
+    monkeypatch.setattr(bs, "await_video", lambda s, j: {"$type": "blob"})
+    monkeypatch.setattr(bs, "upload_blob",
+                        lambda *a: pytest.fail("used the image path"))
+    monkeypatch.setattr(bs, "create_record",
+                        lambda s, r: {"uri": "at://x/1", "cid": "c"})
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    res = bs.publish_thread(_sess(), [bs.Item(text="a", video=b"mp4",
+                                              alt="the reel")])
+    assert res[0].ok
+    assert res[0].record["embed"]["$type"] == "app.bsky.embed.video"
+    assert res[0].record["embed"]["alt"] == "the reel"
+
+
+def test_a_thread_can_mix_a_video_winner_with_image_runners_up(monkeypatch):
+    # Savant does not have a clip for every play. A winner without one gets
+    # the card rather than six silent seconds of a static video.
+    monkeypatch.setattr(bs, "upload_video", lambda s, d, n: {"jobId": "j"})
+    monkeypatch.setattr(bs, "await_video", lambda s, j: {"$type": "vblob"})
+    monkeypatch.setattr(bs, "upload_blob", lambda s, d, m: {"$type": "iblob"})
+    monkeypatch.setattr(bs, "image_size", lambda d: (1080, 1350))
+    monkeypatch.setattr(bs, "fit_image", lambda d, **k: (d, "image/png"))
+    n = {"i": 0}
+
+    def create(s, r):
+        n["i"] += 1
+        return {"uri": f"at://x/{n['i']}", "cid": f"c{n['i']}"}
+
+    monkeypatch.setattr(bs, "create_record", create)
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+
+    res = bs.publish_thread(_sess(), [
+        bs.Item(text="winner", video=b"mp4", alt="reel"),
+        bs.Item(text="runner up", image=b"png", alt="card"),
+    ])
+    assert all(r.ok for r in res)
+    assert res[0].record["embed"]["$type"] == "app.bsky.embed.video"
+    assert res[1].record["embed"]["$type"] == "app.bsky.embed.images"
+    # And the image reply still hangs off the video root.
+    assert res[1].record["reply"]["root"]["uri"] == "at://x/1"

@@ -17,6 +17,11 @@ name: Publish to Bluesky
 #
 #   BSKY_HANDLE        xdawgmlb.bsky.social
 #   BSKY_APP_PASSWORD  xxxx-xxxx-xxxx-xxxx
+#
+# Video needs a VERIFIED ACCOUNT EMAIL. Bluesky refuses uploads otherwise,
+# and the refusal arrives from getUploadLimits as canUpload:false with a
+# sentence saying why -- which the publish step prints before it sends
+# anything, rather than after.
 
 on:
   workflow_dispatch:
@@ -43,6 +48,11 @@ on:
         type: boolean
         required: false
         default: false
+      no_video:
+        description: "Cards only — skip the clips and post stills"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -56,7 +66,9 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Video is a transcode queue on somebody else's machine, and five of
+    # them run one after another. 30 minutes was fine for images.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -105,6 +117,7 @@ jobs:
             --summary publish-summary.md \
             ${{ inputs.live == true && '--live' || '' }} \
             ${{ inputs.allow_stale == true && '--allow-stale' || '' }} \
+            ${{ inputs.no_video == true && '--no-video' || '' }} \
             2>&1 | tee publish.log
 
       - name: Summary
