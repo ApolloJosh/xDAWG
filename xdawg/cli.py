@@ -119,6 +119,10 @@ def main(argv: list[str] | None = None) -> int:
     pub.add_argument("--no-video", action="store_true",
                      help="cards only. Skips the clip chain entirely, so a "
                           "wording check costs no MLB traffic.")
+    pub.add_argument("--force-video", action="store_true",
+                     help="attempt the video upload even when the account "
+                          "reports it cannot. Each post still falls back to "
+                          "its card if the upload is refused.")
 
     sub.add_parser("serve", help="serve the site on localhost:8000")
 
@@ -234,14 +238,25 @@ def main(argv: list[str] | None = None) -> int:
                       f"remaining={lim.get('remainingDailyVideos')} videos / "
                       f"{(lim.get('remainingDailyBytes') or 0)/1e6:.0f} MB"
                       + (f" — {lim['message']}" if lim.get("message") else ""))
-                if lim.get("canUpload") is False:
-                    print("[xdawg] the account cannot upload video right now. "
-                          "Verify the account email in Bluesky settings, or "
-                          "wait for the daily quota. Re-run with --no-video "
-                          "to post the cards instead.")
-                    return 2
+                blocked = lim.get("canUpload") is False
+                why = lim.get("message") or lim.get("error") or ""
             except bluesky.BlueskyError as e:
+                # An unreadable limit is not permission to try anyway. The
+                # first live run treated it as a warning, carried on, and the
+                # upload was refused with the very reason this call would
+                # have given -- after the root post had already failed.
+                blocked, why = True, str(e)
                 print(f"[xdawg] could not read the video limits: {e}")
+            if blocked:
+                print(f"[xdawg] this account cannot upload video right now."
+                      + (f" Reason: {why}" if why else ""))
+                if "email" in why.lower():
+                    print("[xdawg] verify the account email in Bluesky "
+                          "settings — that is the whole fix.")
+                print("[xdawg] re-run with --no-video to post the cards, or "
+                      "--force-video to try anyway.")
+                if not a.force_video:
+                    return 2
         results = bluesky.publish_thread(session, items)
         md = bluesky.report(results, dry_run=False)
         print("\n" + md)

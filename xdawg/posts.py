@@ -325,8 +325,13 @@ def thread_items(awards_path: str | Path, *, window: str = "day",
             try:
                 mp4 = reel_mod.compose(reel_png, box, [clip],
                                        out / f"{base}.mp4")
+                # The card rides along even when the reel exists. A video
+                # upload can be refused for reasons that have nothing to do
+                # with this winner, and losing his post over that is worse
+                # than losing the motion.
                 items.append(Item(text=text, alt=alt,
                                   video=Path(mp4).read_bytes(),
+                                  image=Path(still_png).read_bytes(),
                                   aspect=card_mod.REEL,
                                   name=f"{base}.mp4"))
                 continue

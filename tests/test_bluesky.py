@@ -630,3 +630,87 @@ def test_a_thread_with_every_reel_intact_says_nothing_about_cards():
     md = bs.report(bs.prepare([bs.Item(text="a", video=b"\x00" * 10)]),
                    dry_run=True)
     assert "Why the rest are cards" not in md
+
+
+# --------------------------------------------------------------------------
+# a root that fails
+# --------------------------------------------------------------------------
+
+def test_a_failed_root_stops_the_thread(monkeypatch):
+    # The first live video run failed on the winner and carried on, so
+    # "No. 2 on the day" went up as a standalone top-level post with
+    # nothing above it — a runner-up presented as the day's item.
+    def refuse_video(s, d, n):
+        raise bs.BlueskyError('401 {"error":"unconfirmed_email"}')
+
+    monkeypatch.setattr(bs, "upload_video", refuse_video)
+    monkeypatch.setattr(bs, "create_record",
+                        lambda s, r: pytest.fail("it posted anyway"))
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+
+    items = [bs.Item(text="winner", video=b"mp4"),
+             bs.Item(text="runner up", video=b"mp4"),
+             bs.Item(text="third", video=b"mp4")]
+    res = bs.publish_thread(_sess(), items)
+    assert not any(r.ok for r in res)
+    assert "unconfirmed_email" in res[0].error
+    assert "root post failed" in res[1].error
+    assert "root post failed" in res[2].error
+
+
+def test_a_failed_reply_leaves_the_rest_of_the_thread_alone(monkeypatch):
+    # A reply is different from a root: the thread is still correct, just
+    # shorter, so the run carries on.
+    n = {"i": 0}
+
+    def flaky(s, r):
+        n["i"] += 1
+        if n["i"] == 2:
+            raise bs.BlueskyError("502")
+        return {"uri": f"at://x/{n['i']}", "cid": f"c{n['i']}"}
+
+    monkeypatch.setattr(bs, "create_record", flaky)
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    res = bs.publish_thread(_sess(), [bs.Item(text=f"p{i}") for i in range(3)])
+    assert [r.ok for r in res] == [True, False, True]
+
+
+# --------------------------------------------------------------------------
+# a video that cannot be uploaded still gets its post
+# --------------------------------------------------------------------------
+
+def test_a_refused_video_falls_back_to_the_card(monkeypatch):
+    def refuse(s, d, n):
+        raise bs.BlueskyError('401 {"error":"unconfirmed_email"}')
+
+    monkeypatch.setattr(bs, "upload_video", refuse)
+    monkeypatch.setattr(bs, "upload_blob", lambda s, d, m: {"$type": "iblob"})
+    monkeypatch.setattr(bs, "image_size", lambda d: (1080, 1350))
+    monkeypatch.setattr(bs, "fit_image", lambda d, **k: (d, "image/png"))
+    monkeypatch.setattr(bs, "create_record",
+                        lambda s, r: {"uri": "at://x/1", "cid": "c1"})
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+
+    res = bs.publish_thread(_sess(), [bs.Item(text="a", video=b"mp4",
+                                              image=b"png", alt="card")])
+    assert res[0].ok, "losing the post over a video problem is worse"
+    assert res[0].record["embed"]["$type"] == "app.bsky.embed.images"
+    assert res[0].kind == "image"
+    assert "unconfirmed_email" in res[0].note
+
+
+def test_a_refused_video_with_no_card_is_still_a_failure(monkeypatch):
+    monkeypatch.setattr(bs, "upload_video",
+                        lambda s, d, n: (_ for _ in ()).throw(
+                            bs.BlueskyError("nope")))
+    monkeypatch.setattr(bs, "create_record",
+                        lambda s, r: pytest.fail("posted with no embed"))
+    monkeypatch.setattr(bs.time, "sleep", lambda _: None)
+    res = bs.publish_thread(_sess(), [bs.Item(text="a", video=b"mp4")])
+    assert not res[0].ok and "nope" in res[0].error
+
+
+def test_a_dry_run_says_the_card_is_ready_as_a_fallback():
+    out = bs.prepare([bs.Item(text="a", video=b"\x00" * 10, image=b"png")])
+    assert out[0].kind == "video"
+    assert "fallback" in out[0].note

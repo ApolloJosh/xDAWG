@@ -370,10 +370,12 @@ def post_url(handle: str, uri: str) -> str:
 class Item:
     """One post to be made, and whatever goes with it.
 
-    A reel if we have one, otherwise the still card. Never both: a post has
-    one embed. A winner whose moment Savant has no clip for still gets a
-    post -- it just gets the graphic instead of the video, which is a better
-    outcome than six silent seconds of a static card.
+    The card is always here. The reel is here too when Savant had a clip.
+    A post carries one embed, so publish_thread prefers the reel and falls
+    back to the card -- which matters because a video upload can fail for
+    reasons that have nothing to do with this winner (an unconfirmed email,
+    the daily quota), and losing his post over that is worse than losing
+    the motion.
     """
     text: str
     image: bytes | None = None
@@ -418,6 +420,8 @@ def prepare(items: list[Item]) -> list[Result]:
         r.record = post_record(it.text)
         if it.video:
             r.kind, r.bytes, r.mime = "video", len(it.video), "video/mp4"
+            if it.image:
+                r.note = r.note or "card ready as a fallback"
             if len(it.video) > VIDEO_MAX:
                 r.error = (f"video is {len(it.video)/1e6:.1f} MB; the limit "
                            f"is {VIDEO_MAX/1e6:.0f} MB")
@@ -436,38 +440,64 @@ def publish_thread(session: Session, items: list[Item], *,
                    pause: float = 0.6) -> list[Result]:
     """Post the first item, then chain the rest beneath it as replies.
 
-    A failure part-way leaves the thread short rather than rolling back:
-    there is no transaction here, and deleting three good posts because the
-    fourth failed would be a worse outcome than a thread of three.
+    A reply that fails leaves the thread short, which is survivable: there
+    is no transaction here, and deleting three good posts because the
+    fourth failed would be worse.
+
+    A *root* that fails is different, and stops everything. The first
+    version carried on, so when the winner's video upload was refused his
+    post never existed and "No. 2 on the day" went up as a standalone
+    top-level post with nothing above it -- a runner-up presented as the
+    day's item. A short thread is a smaller problem than a wrong one.
     """
     results = prepare(items)
     root = parent = None
-    for it, r in zip(items, results):
+    for n, (it, r) in enumerate(zip(items, results)):
         if r.error:
             continue
         try:
-            images, video = [], None
-            if it.video:
-                job = upload_video(session, it.video, it.name)
-                blob = await_video(session, job["jobId"])
-                video = video_embed(blob, it.alt, it.aspect)
-            elif it.image:
-                data, mime = fit_image(it.image)
-                blob = upload_blob(session, data, mime)
-                images.append(image_item(blob, it.alt, image_size(it.image)))
-            rec = post_record(it.text, images=images or None, video=video,
-                              reply=reply_ref(root, parent) if root else None)
-            r.record = rec
-            ref = create_record(session, rec)
-            r.uri, r.cid = ref["uri"], ref["cid"]
+            r.uri, r.cid = _post_one(session, it, r, root, parent)
             r.url = post_url(session.handle, r.uri)
+            ref = {"uri": r.uri, "cid": r.cid}
             if root is None:
                 root = ref
             parent = ref
         except Exception as e:  # noqa: BLE001 -- one post, not the thread
             r.error = f"{type(e).__name__}: {e}"
+            if n == 0:
+                for rest in results[1:]:
+                    rest.error = ("not attempted: the root post failed, and a "
+                                  "runner-up alone reads as the day's winner")
+                break
         time.sleep(pause)
     return results
+
+
+def _post_one(session: Session, it: Item, r: Result,
+              root: dict | None, parent: dict | None) -> tuple[str, str]:
+    """Send one post, degrading from reel to card rather than losing it."""
+    images, video = [], None
+    if it.video:
+        try:
+            job = upload_video(session, it.video, it.name)
+            blob = await_video(session, job["jobId"])
+            video = video_embed(blob, it.alt, it.aspect)
+        except BlueskyError as e:
+            if not it.image:
+                raise
+            # The reel is gone; the post is not. Say which, and why.
+            r.note = f"video upload failed, posted the card: {e}"
+            r.kind = "image"
+    if video is None and it.image:
+        data, mime = fit_image(it.image)
+        r.bytes, r.mime, r.kind = len(data), mime, "image"
+        blob = upload_blob(session, data, mime)
+        images.append(image_item(blob, it.alt, image_size(it.image)))
+    rec = post_record(it.text, images=images or None, video=video,
+                      reply=reply_ref(root, parent) if root else None)
+    r.record = rec
+    ref = create_record(session, rec)
+    return ref["uri"], ref["cid"]
 
 
 def report(results: list[Result], *, dry_run: bool) -> str:

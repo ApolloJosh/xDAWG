@@ -602,6 +602,26 @@ security-shaped:
   run behind an unbounded loop. A job that completes with no blob is an
   error, not a silent post.
 
+**Video requires a verified account email**, and the first live run proved
+it the expensive way. `uploadVideo` returned
+`401 {"error":"unconfirmed_email"}`; the root post therefore failed, and the
+publisher carried on and posted "No. 2 on the day" as a **standalone
+top-level post** — a runner-up presented as the day's item. Three things
+changed as a result:
+
+- **A failed root stops the thread.** A reply that fails leaves the thread
+  short, which is survivable. A root that fails orphans everything below
+  it, which is not: a short thread is a smaller problem than a wrong one.
+- **A refused video falls back to that post's card.** The card now rides
+  along with every reel for exactly this reason. A video upload can be
+  refused for reasons that have nothing to do with the winner, and losing
+  his post over that is worse than losing the motion.
+- **An unreadable `getUploadLimits` blocks a live video run.** It used to
+  warn and continue, which is how a run proceeded into an upload the
+  account was never going to be allowed to make — the limits call would
+  have named the reason, and its failure *was* the answer. `--force-video`
+  overrides.
+
 **Video requires a verified account email.** That and the daily quota are
 the two things that stop an upload, and both report through
 `app.bsky.video.getUploadLimits` as `canUpload:false` with a sentence a
