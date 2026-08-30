@@ -621,6 +621,45 @@ October. Postseason results come from StatsAPI via `ingest.load_postseason`,
 keyed off MLB's own game-type codes rather than dates, because the bracket has
 been reshaped three times in a decade.
 
+## Shipping a change
+
+    ./scripts/ship.sh "what changed"
+
+Stages everything, commits, rebases on origin, pushes. Use it rather than
+hand-written git commands.
+
+That is not a style preference. The hand-written version failed twice the
+same way: the `git add` list was typed out fresh each round and both times
+it was missing a path. Nobody noticed, because a commit that omits a
+directory looks exactly like one that does not. `assets/` — the fonts and
+the logo the cards are built from — sat untracked through two rounds, and
+`.github/workflows/posts.yml` never reached the repo at all. CI would have
+rendered cards in whatever sans the runner happened to have, with the CSS
+wordmark instead of the mark, because `_font_faces()` and `default_logo()`
+both skip files that are not there rather than failing loudly. `git add -A`
+against a correct `.gitignore` cannot omit a path.
+
+**There is no auto-push, and there never was.** Files written into the
+working folder over the file bridge are *in the folder*; they are not in
+the repo until somebody commits and pushes them. Two things stand in the
+way of automating it, and both are real:
+
+- The sandbox's git proxy refuses `apollojosh/xDAWG` — it is not in the
+  session's authorised repository set, so no credential is injected and the
+  push 403s.
+- The device bridge runs in its own Linux VM with no GitHub credentials of
+  its own. It can *read* the repo (public repos need no auth for that,
+  which is why `git ls-remote` works and misleadingly suggests push might),
+  but `git push` there dies on "could not read Username".
+
+So: the assistant can stage and commit on the device, and often will. The
+push is a human's.
+
+The bridge can write into `.git/` but is not permitted to unlink, so every
+git command it runs leaves an `index.lock` behind that will block the
+*next* one. `ship.sh` clears those first, along with the `tmp_obj_*` litter
+`git fetch` strews through `.git/objects/`.
+
 ## Before pushing anything
 
 `python -m pytest tests/ -q` runs the whole scoring path offline against a
