@@ -68,6 +68,55 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--dry-run", action="store_true",
                    help="resolve playIds but download nothing")
 
+    po = sub.add_parser(
+        "posts",
+        help="build a window's cards, reels and captions, ready to upload",
+    )
+    po.add_argument("--window", choices=("day", "week", "month"), default="day")
+    po.add_argument("--key", default=None,
+                    help="window key, e.g. 2026-08-28. Default: the latest one.")
+    po.add_argument("--top", type=int, default=5)
+    po.add_argument("--awards", default=str(SITE / "data" / "awards.js"))
+    po.add_argument("--out", default="posts")
+    po.add_argument("--handle", default="@XDAWGMLB")
+    po.add_argument("--logo", default=None,
+                    help="override the footer mark. Omitted uses "
+                         "assets/logo/mark.png.")
+    po.add_argument("--summary", default=None,
+                    help="also write the markdown report to this file")
+    po.add_argument("--no-video", action="store_true",
+                    help="cards and captions only; do not fetch clips")
+
+    pub = sub.add_parser(
+        "publish",
+        help="post a window's winners to Bluesky as one thread",
+    )
+    pub.add_argument("--window", choices=("day", "week", "month"), default="day")
+    pub.add_argument("--key", default=None,
+                     help="window key, e.g. 2026-08-28. Default: the latest one.")
+    pub.add_argument("--top", type=int, default=5)
+    pub.add_argument("--awards", default=str(SITE / "data" / "awards.js"))
+    pub.add_argument("--out", default="posts")
+    pub.add_argument("--handle", default="@XDAWGMLB",
+                     help="the handle printed in the card footer")
+    pub.add_argument("--logo", default=None,
+                     help="override the footer mark. Omitted uses "
+                          "assets/logo/mark.png.")
+    pub.add_argument("--summary", default=None,
+                     help="also write the markdown report to this file")
+    # Posting is opt-in, every time. A flag that defaults to "send it" is a
+    # flag somebody forgets is there, and this one is not undoable from a
+    # follower's timeline.
+    pub.add_argument("--live", action="store_true",
+                     help="actually post. Without it this is a dry run and "
+                          "nothing leaves the machine.")
+    pub.add_argument("--max-age", type=int, default=2,
+                     help="refuse to post a window whose last day is more "
+                          "than this many days old (default 2). A stale "
+                          "'DAWG of the Day' reads as current.")
+    pub.add_argument("--allow-stale", action="store_true",
+                     help="post an old window anyway. For backfilling.")
+
     sub.add_parser("serve", help="serve the site on localhost:8000")
 
     a = ap.parse_args(argv)
@@ -109,6 +158,82 @@ def main(argv: list[str] | None = None) -> int:
         out = write_history(payload, a.site)
         print(f"\n[xdawg] wrote {out}")
         return 0
+
+    if a.cmd == "publish":
+        import os
+
+        from . import bluesky
+        from .posts import thread_items
+
+        print(f"[xdawg] publish: {a.window} {a.key or '(latest)'} top {a.top}")
+        logo = Path(a.logo).read_bytes() if a.logo else None
+        items, key = thread_items(a.awards, window=a.window, key=a.key,
+                                  top=a.top, out_dir=a.out, handle=a.handle,
+                                  logo=logo)
+        if not items:
+            print("[xdawg] that window has no board. Nothing to do.")
+            return 1
+
+        from .posts import staleness
+
+        age = staleness(a.window, key)
+        if age > a.max_age:
+            note = (f"[xdawg] that {a.window} board is {age} days old "
+                    f"(window {key}).")
+            if a.live and not a.allow_stale:
+                print(note)
+                print("[xdawg] refusing to post it as current. Check whether "
+                      "the nightly ran; --allow-stale overrides.")
+                return 3
+            print(note + "  (--allow-stale set)" if a.allow_stale else note)
+
+        if not a.live:
+            md = bluesky.report(bluesky.prepare(items), dry_run=True)
+            print("\n" + md)
+            if a.summary:
+                Path(a.summary).write_text(md + "\n")
+            print("\n[xdawg] dry run. Re-run with --live to post.")
+            return 0
+
+        # Credentials come from the environment, never from argv: an app
+        # password on a command line lands in shell history and in the
+        # process table where anyone on the box can read it.
+        bhandle = os.environ.get("BSKY_HANDLE", "")
+        bpass = os.environ.get("BSKY_APP_PASSWORD", "")
+        if not bhandle or not bpass:
+            print("[xdawg] set BSKY_HANDLE and BSKY_APP_PASSWORD to post.")
+            return 2
+        try:
+            session = bluesky.login(bhandle, bpass)
+        except bluesky.BlueskyError as e:
+            print(f"[xdawg] login failed: {e}")
+            return 2
+        print(f"[xdawg] posting as {session.handle} ({session.did})")
+        results = bluesky.publish_thread(session, items)
+        md = bluesky.report(results, dry_run=False)
+        print("\n" + md)
+        if a.summary:
+            Path(a.summary).write_text(md + "\n")
+        return 0 if all(r.ok for r in results) else 2
+
+    if a.cmd == "posts":
+        from .posts import build_posts, report
+
+        print(f"[xdawg] posts: {a.window} {a.key or '(latest)'} top {a.top}")
+        logo = Path(a.logo).read_bytes() if a.logo else None
+        results = build_posts(a.awards, window=a.window, key=a.key, top=a.top,
+                              out_dir=a.out, handle=a.handle, logo=logo,
+                              fetch_video=not a.no_video)
+        if not results:
+            print("[xdawg] that window has no board. Nothing to do.")
+            return 1
+        md = report(results)
+        print("\n" + md)
+        if a.summary:
+            Path(a.summary).write_text(md + "\n")
+        # A post with a still instead of a clip still counts. Only a run
+        # that produced no card at all has actually failed.
+        return 0 if any(r.card for r in results) else 2
 
     if a.cmd == "clips":
         from .clips import build_clips, report
