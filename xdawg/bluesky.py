@@ -357,6 +357,41 @@ def create_record(session: Session, record: dict) -> dict:
     return {"uri": out["uri"], "cid": out["cid"]}
 
 
+def recent_texts(session: Session, limit: int = 100) -> list[str]:
+    """The text of this account's own recent posts, newest first.
+
+    Read from the repo rather than from a feed view: `listRecords` returns
+    what we wrote, without threading, reposts or any of the algorithmic
+    shaping a feed applies. The question here is "did we already say this",
+    and the repo is the only place that answers it exactly.
+    """
+    out = _query(session, "com.atproto.repo.listRecords",
+                 {"repo": session.did, "collection": COLLECTION,
+                  "limit": min(int(limit), 100)})
+    return [str((r.get("value") or {}).get("text", ""))
+            for r in out.get("records", [])]
+
+
+def already_posted(session: Session, headline: str,
+                   limit: int = 100) -> bool:
+    """Has a post starting with this headline already gone out?
+
+    The alternative is a ledger file, which is one more thing to commit,
+    to race, and to be wrong. The timeline is the ledger. A day's headline
+    is unique per window -- "DAWG OF THE DAY — August 29, 2026" -- so an
+    exact prefix match answers it without heuristics.
+    """
+    head = (headline or "").strip()
+    if not head:
+        return False
+    return any(t.strip().startswith(head) for t in recent_texts(session, limit))
+
+
+def headline_of(text: str) -> str:
+    """The first line of a post, which is the window it belongs to."""
+    return (text or "").strip().split("\n", 1)[0].strip()
+
+
 def post_url(handle: str, uri: str) -> str:
     """A browsable link for an at:// record URI."""
     return f"https://bsky.app/profile/{handle}/post/{uri.rsplit('/', 1)[-1]}"

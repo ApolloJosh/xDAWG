@@ -82,7 +82,7 @@ WINDOW_LABEL = {"day": "DAWG OF THE DAY", "week": "DAWG OF THE WEEK",
 # one has to change with it -- tests/test_card.py asserts they agree.
 CREDIT_LABELS = {
     "survived_two_strikes": "reached after two strikes",
-    "extra_pitch": "pitches past the 5th",
+    "extra_pitch": "pitches after pitch 5",
     "two_strike_foul": "two-strike foul-offs",
     "chase_contact": "chased and made contact",
     "hard_hit": "hard-hit balls",
@@ -253,17 +253,31 @@ def stat_cells(line: dict | None, role: str) -> list[tuple[str, str]]:
     return out
 
 
-def credit_rows(credits: dict | None, limit: int | None = None
-                ) -> list[tuple[str, str, bool]]:
-    """"How he earned it", in the site's order and the site's words."""
+def credit_rows(credits: dict | None, limit: int | None = None,
+                points: dict | None = None
+                ) -> list[tuple[str, str, str, bool]]:
+    """"How he earned it", in the site's order and the site's words.
+
+    Each row is (label, count, points, is_debit). The points are GROSS --
+    what the credit was worth before the average-day baseline every plate
+    appearance is charged, and before the per-appearance cap. They
+    deliberately do not sum to the process total beside them; making them
+    would mean apportioning a cap across credits, which is arithmetic
+    nobody could defend. What a reader wants here is the relative weight of
+    a jam escape against a first-pitch strike, and that is exactly what
+    these are.
+    """
     c = credits or {}
+    pts = points or {}
     rows = []
     for key, label in CREDIT_LABELS.items():
         n = c.get(key)
         if not n:
             continue
         debit = key in DEBITS
-        rows.append((label, f"{'−' if debit else ''}{abs(int(n))}", debit))
+        p = pts.get(key)
+        rows.append((label, f"{'−' if debit else ''}{abs(int(n))}",
+                     "" if p is None else sgn(float(p), 1), debit))
         if limit and len(rows) >= limit:
             break
     return rows
@@ -345,7 +359,7 @@ def card_html(row: dict, *, window: str = "day", key: str = "",
     # Ask for more than will fit and let the page drop what does not. A
     # hard cap here would be a guess at how much room a two-line moment
     # sentence leaves; the page can simply measure.
-    credits = credit_rows(row.get("credits"), 7)
+    credits = credit_rows(row.get("credits"), 7, row.get("credit_pts"))
 
     label = WINDOW_LABEL.get(window, "DAWG")
     crown = label if rank == 1 else f"NO. {rank} {label.replace('DAWG OF THE', 'ON THE')}"
@@ -357,9 +371,11 @@ def card_html(row: dict, *, window: str = "day", key: str = "",
     cells_html = "".join(
         f'<div><div class="k">{e(k)}</div><div class="v">{e(v)}</div></div>'
         for k, v in cells)
-    def _credit(lbl: str, n: str, debit: bool) -> str:
+    def _credit(lbl: str, n: str, pts: str, debit: bool) -> str:
         open_tag = '<div class="debit">' if debit else "<div>"
-        return f"{open_tag}<span>{e(lbl)}</span><span>{e(n)}</span></div>"
+        return (f"{open_tag}<span>{e(lbl)}</span>"
+                f"<span class=\"n\">{e(n)}</span>"
+                f"<span class=\"p\">{e(pts)}</span></div>")
 
     credits_html = "".join(_credit(*c) for c in credits)
 
@@ -437,9 +453,16 @@ body{{font-family:'XD Text',Arial,Helvetica,sans-serif;color:{INK};
   font-size:26px;flex:0 0 auto}}
 .credits>b{{display:block;font-family:'XD Display';font-weight:400;font-size:27px;
   letter-spacing:.05em;text-transform:uppercase;color:{MUTED};margin-bottom:7px}}
-.credits>div{{display:flex;justify-content:space-between;gap:24px;
-  border-bottom:2px dotted {HAIR};padding:5px 0 4px}}
+.credits>div{{display:flex;gap:16px;border-bottom:2px dotted {HAIR};
+  padding:5px 0 4px}}
+.credits>div>span:first-child{{flex:1;min-width:0}}
+/* Count then points, both right-aligned on a fixed column so the numbers
+   line up down the list rather than ragging with the label lengths. */
+.credits .n{{width:78px;text-align:right;font-variant-numeric:tabular-nums}}
+.credits .p{{width:120px;text-align:right;font-variant-numeric:tabular-nums;
+  color:{MUTED}}}
 .credits>div.debit{{color:{SECONDARY}}}
+.credits>div.debit .p{{color:{SECONDARY}}}
 
 .why{{margin:{20 if reel else 24}px {PAD}px 0;padding-top:{16 if reel else 20}px;
   border-top:2px solid {HAIR};font-size:28px;line-height:1.32;flex:0 0 auto}}

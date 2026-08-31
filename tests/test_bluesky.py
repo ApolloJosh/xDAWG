@@ -714,3 +714,52 @@ def test_a_dry_run_says_the_card_is_ready_as_a_fallback():
     out = bs.prepare([bs.Item(text="a", video=b"\x00" * 10, image=b"png")])
     assert out[0].kind == "video"
     assert "fallback" in out[0].note
+
+
+# --------------------------------------------------------------------------
+# not posting the same window twice
+# --------------------------------------------------------------------------
+
+def test_the_headline_is_the_first_line_of_a_post():
+    text = posts.bluesky_text(ROW, "day", "2026-08-28")
+    assert bs.headline_of(text) == "DAWG OF THE DAY — August 28, 2026"
+
+
+def test_a_window_already_on_the_timeline_is_recognised(monkeypatch):
+    # The account collected two threads for August 28 from two manual runs.
+    # The timeline is the ledger; no state file to commit or race.
+    monkeypatch.setattr(bs, "recent_texts", lambda s, limit=100: [
+        "DAWG OF THE DAY — August 29, 2026\n\nsomebody else",
+        "No. 2 on the day — August 28, 2026\n\nrunner up",
+        "DAWG OF THE DAY — August 28, 2026\n\nCam Schlittler (NYY) — +96.0",
+    ])
+    assert bs.already_posted(_sess(), "DAWG OF THE DAY — August 28, 2026")
+    assert not bs.already_posted(_sess(), "DAWG OF THE DAY — August 30, 2026")
+
+
+def test_a_runner_up_headline_does_not_count_as_the_window(monkeypatch):
+    # Only the root's headline decides. A reply that survived a failed root
+    # must not make the window look posted.
+    monkeypatch.setattr(bs, "recent_texts", lambda s, limit=100: [
+        "No. 2 on the day — August 29, 2026\n\norphan",
+    ])
+    assert not bs.already_posted(_sess(), "DAWG OF THE DAY — August 29, 2026")
+
+
+def test_an_empty_headline_never_claims_a_match(monkeypatch):
+    monkeypatch.setattr(bs, "recent_texts", lambda s, limit=100: ["anything"])
+    assert not bs.already_posted(_sess(), "")
+
+
+def test_recent_texts_reads_the_repo_not_a_feed(monkeypatch):
+    seen = {}
+
+    def fake_query(session, path, params, **kw):
+        seen["path"], seen["params"] = path, params
+        return {"records": [{"value": {"text": "one"}}, {"value": {}}]}
+
+    monkeypatch.setattr(bs, "_query", fake_query)
+    assert bs.recent_texts(_sess()) == ["one", ""]
+    assert seen["path"] == "com.atproto.repo.listRecords"
+    assert seen["params"]["collection"] == "app.bsky.feed.post"
+    assert seen["params"]["limit"] <= 100

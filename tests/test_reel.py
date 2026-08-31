@@ -58,18 +58,32 @@ def test_one_clip_is_not_run_through_concat():
     assert "concat" not in g
 
 
-def test_the_reel_fades_at_both_ends():
+def test_the_reel_opens_on_the_play_with_no_fade_in():
+    # Half a second of white before the card and the play is a viewer's
+    # thumb already moving. The tail still fades: it says the clip is over
+    # rather than looping mid-swing.
     g = _graph(reel.build_command("c.png", BOX, ["a.mp4"], "o.mp4",
-                                  duration=10, fade=0.25))
-    assert "fade=t=in:st=0:d=0.25" in g
+                                  duration=10))
+    assert "fade=t=in" not in g
     assert "fade=t=out:st=9.750:d=0.25" in g
 
 
+def test_a_fade_in_can_still_be_asked_for():
+    g = _graph(reel.build_command("c.png", BOX, ["a.mp4"], "o.mp4",
+                                  duration=10, fade_in=0.5))
+    assert "fade=t=in:st=0:d=0.5" in g
+
+
+def test_the_still_does_not_open_on_white_either():
+    cmd = reel.build_command("c.png", BOX, ["a.mp4"], "o.mp4", duration=8)
+    assert "fade=t=in" not in _graph(cmd)
+
+
 def test_the_fade_is_to_white_not_black():
-    # The card is on paper. A dip to black at each end reads as a fault in
-    # the file rather than as a transition.
+    # The card is on paper. A dip to black reads as a fault in the file
+    # rather than as a transition.
     g = _graph(reel.build_command("c.png", BOX, ["a.mp4"], "o.mp4", duration=8))
-    assert g.count("color=white") == 2
+    assert g.count("color=white") == 1      # the tail only
     # And the canvas the card sits on is paper too, so a card narrower than
     # the frame would show white margins rather than black ones.
     cmd = reel.build_command("c.png", BOX, ["a.mp4"], "o.mp4", duration=8)

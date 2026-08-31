@@ -68,7 +68,11 @@ select{font-family:var(--body);font-size:14px;padding:5px 7px;border:2px solid v
 .split span+span{border-left:0}
 .credits{margin:0 14px 12px;font-size:12px}
 .credits b{font-family:var(--display);letter-spacing:.04em;font-weight:400;font-size:12px;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:3px}
-.credits div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dotted var(--hair);padding:1px 0}
+.credits div{display:flex;gap:10px;border-bottom:1px dotted var(--hair);padding:1px 0}
+.credits div>span:first-child{flex:1;min-width:0}
+.credits .n{width:34px;text-align:right;font-variant-numeric:tabular-nums}
+.credits .p{width:52px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.credits div.debit .p{color:var(--secondary)}
 .credits div.debit{color:var(--secondary)}
 .credits span:last-child{font-variant-numeric:tabular-nums}
 .entry .split,.entry .credits{margin-left:0;margin-right:0}
@@ -198,7 +202,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     probability added times opponent quality, summed over the window.</div>
 </footer>
 
-<script src="data/awards.js?v=202608301247" onerror="window.__noaw=1"></script>
+<script src="data/awards.js?v=202608292220" onerror="window.__noaw=1"></script>
 <script>
 (function(){
   var A = window.XDAWG_AWARDS;
@@ -319,7 +323,7 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
   // order they read on the card.
   var CREDIT_LABELS = {
     survived_two_strikes: "reached after two strikes",
-    extra_pitch:          "pitches past the 5th",
+    extra_pitch:          "pitches after pitch 5",
     two_strike_foul:      "two-strike foul-offs",
     chase_contact:        "chased and made contact",
     hard_hit:             "hard-hit balls",
@@ -339,9 +343,17 @@ footer{border-top:4px solid var(--rule);margin-top:44px;padding:16px 0 40px;font
     if(!c) return "";
     var keys = Object.keys(CREDIT_LABELS).filter(function(k){ return c[k]; });
     if(!keys.length) return "";
+    // Points as well as counts. GROSS: the process total is net of the
+    // average-day baseline every plate appearance is charged and is capped
+    // per appearance, so these do not sum to it. What they give the reader
+    // is the relative weight of a jam escape against a first-pitch strike.
+    var P = r.credit_pts || {};
     return '<div class="credits"><b>How he earned it</b>' + keys.map(function(k){
+      var pts = (P[k] === undefined || P[k] === null) ? ""
+              : (P[k] >= 0 ? "+" : "") + Number(P[k]).toFixed(1);
       return '<div'+(DEBITS[k]?' class="debit"':'')+'><span>'+
-        esc(CREDIT_LABELS[k])+'</span><span>'+(DEBITS[k]?"\u2212":"")+c[k]+'</span></div>';
+        esc(CREDIT_LABELS[k])+'</span><span class="n">'+(DEBITS[k]?"\u2212":"")+c[k]+
+        '</span><span class="p">'+pts+'</span></div>';
     }).join("") + '</div>';
   }
 

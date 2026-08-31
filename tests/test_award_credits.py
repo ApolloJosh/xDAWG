@@ -152,6 +152,55 @@ def test_credit_columns_are_counts_not_weighted_values():
     assert c["zone_with_traffic"] == 1.0, c["zone_with_traffic"]
 
 
+def test_the_weighted_counts_survive_for_the_points_column():
+    """Scoring needs the weighted copy; so does the card.
+
+    These used to be dropped the moment proc_hitter/proc_pitcher were
+    summed. Without them a card can say "22 strikes with men on" but not
+    what those 22 were worth, which is the number a reader actually weighs
+    against the win probability beside it.
+    """
+    out = awards._process_points(pd.DataFrame([
+        _pitch(1, 1, 1, li=4.0, zone=5, on_1b=1.0, on_2b=2.0)
+    ])).iloc[0]
+    assert out[f"{awards.CW}zone_with_traffic"] > out["zone_with_traffic"], (
+        "the weighted copy should carry the leverage the count does not")
+
+
+def test_a_credit_is_worth_its_value_times_its_weighted_count():
+    """The points column is the count, the credit's value, and nothing else.
+
+    Checked at neutral leverage where the damping multiplier is exactly 1,
+    so the arithmetic is visible: one strike with men on at 1x leverage is
+    worth exactly AWARD_CREDITS["pitcher"]["zone_with_traffic"].
+    """
+    out = awards._process_points(pd.DataFrame([
+        _pitch(1, 1, 1, li=1.0, zone=5, on_1b=1.0, on_2b=2.0)
+    ])).iloc[0]
+    w = out[f"{awards.CW}zone_with_traffic"]
+    assert abs(w - 1.0) < 1e-9, f"damping should be 1x at li=1, got {w}"
+    # proc_pitcher is that weighted count times the credit's value, summed
+    # over every credit that fired -- which here is this one and the
+    # first-pitch strike it also was.
+    expected = sum(out[f"{awards.CW}{c}"] * v
+                   for c, v in AWARD_CREDITS["pitcher"].items()
+                   if f"{awards.CW}{c}" in out.index)
+    assert abs(out["proc_pitcher"] - expected) < 1e-9
+
+
+def test_points_and_counts_are_different_columns():
+    # A high-leverage credit must show the same COUNT and a bigger POINTS
+    # figure. Conflating them is how "3 jams escaped" becomes "4.7".
+    def one(li):
+        return awards._process_points(pd.DataFrame([
+            _pitch(1, 1, 1, li=li, zone=5, on_1b=1.0, on_2b=2.0)
+        ])).iloc[0]
+
+    lo, hi = one(1.0), one(4.0)
+    assert lo["zone_with_traffic"] == hi["zone_with_traffic"] == 1.0
+    assert hi[f"{awards.CW}zone_with_traffic"] > lo[f"{awards.CW}zone_with_traffic"]
+
+
 if __name__ == "__main__":
     import traceback
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

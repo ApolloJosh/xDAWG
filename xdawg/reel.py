@@ -25,7 +25,11 @@ from pathlib import Path
 
 FPS = 30
 BG = "white"             # the card is on paper; the canvas behind it must be too
-FADE = 0.25              # seconds of fade at each end of the finished reel
+# No fade IN. The reel opens on the card and the play, and half a second of
+# white before either is a viewer's thumb already moving. A fade OUT still
+# earns its place: it says the clip is over rather than looping mid-swing.
+FADE_IN = 0.0
+FADE = 0.25              # the tail
 FADE_TO = "white"        # not black: a black dip on a white card reads as a fault
 
 
@@ -115,7 +119,7 @@ def fit_filter(box: tuple[int, int, int, int], label_in: str,
 def build_command(card: str | Path, box: tuple[int, int, int, int],
                   clips: list[str | Path], out: str | Path, *,
                   duration: float, canvas: tuple[int, int] = (1080, 1920),
-                  fade: float = FADE) -> list[str]:
+                  fade: float = FADE, fade_in: float = FADE_IN) -> list[str]:
     """The single ffmpeg call that makes one reel. Pure -- builds, runs nothing."""
     x, y, _, _ = box
     cw, ch = canvas
@@ -140,12 +144,13 @@ def build_command(card: str | Path, box: tuple[int, int, int, int],
                      f"concat=n={n}:v=1:a=0[clip]")
     chain.append(f"[0:v][clip]overlay=x={x}:y={y}:shortest=0[bg]")
     chain.append(f"[bg][1:v]overlay=0:0:format=auto[flat]")
+    parts = []
+    if fade_in > 0:
+        parts.append(f"fade=t=in:st=0:d={fade_in}:color={FADE_TO}")
     if fade > 0:
-        fo = max(duration - fade, 0)
-        chain.append(f"[flat]fade=t=in:st=0:d={fade}:color={FADE_TO},"
-                     f"fade=t=out:st={fo:.3f}:d={fade}:color={FADE_TO}[v]")
-    else:
-        chain.append("[flat]null[v]")
+        parts.append(f"fade=t=out:st={max(duration - fade, 0):.3f}:"
+                     f"d={fade}:color={FADE_TO}")
+    chain.append(f"[flat]{','.join(parts) if parts else 'null'}[v]")
 
     args += ["-filter_complex", ";".join(chain), "-map", "[v]"]
     # Audio is taken from the first clip only. Concatenated broadcast audio
@@ -201,7 +206,6 @@ def still(card: str | Path, out: str | Path, *, seconds: float = 6.0,
           "-loop", "1", "-i", str(card),
           "-filter_complex",
           f"[0:v][1:v]overlay=0:0:format=auto,"
-          f"fade=t=in:st=0:d={FADE}:color={FADE_TO},"
           f"fade=t=out:st={seconds - FADE:.3f}:d={FADE}:color={FADE_TO}[v]",
           "-map", "[v]", "-t", f"{seconds:.3f}",
           "-c:v", "libx264", "-preset", "medium", "-crf", "20",

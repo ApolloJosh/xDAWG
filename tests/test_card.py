@@ -67,6 +67,12 @@ def test_the_palette_is_the_site_s_palette():
         assert f"--{name}:{value}" in src.replace("#000;", "#000000;"), name
 
 
+def test_the_extra_pitch_label_says_pitch_not_inning():
+    # "pitches past the 5th" reads as the fifth inning. It means the fifth
+    # pitch of the plate appearance.
+    assert card.CREDIT_LABELS["extra_pitch"] == "pitches after pitch 5"
+
+
 @needs_site
 def test_every_credit_is_worded_the_way_the_site_words_it():
     # Two lists of thirteen phrases will drift the moment somebody edits one
@@ -217,13 +223,39 @@ def test_credits_read_in_the_site_s_order_not_by_size():
 
 def test_a_debit_is_marked_and_signed():
     rows = {r[0]: r for r in card.credit_rows({"walk_allowed": 5})}
-    label, n, debit = rows["walks allowed"]
+    label, n, pts, debit = rows["walks allowed"]
     assert debit is True and n == "−5"
 
 
 def test_a_credit_is_neither_marked_nor_signed():
-    _, n, debit = card.credit_rows({"putaway": 8})[0]
+    _, n, pts, debit = card.credit_rows({"putaway": 8})[0]
     assert debit is False and n == "8"
+
+
+def test_a_credit_carries_the_points_it_earned():
+    # Counts alone do not tell a reader whether 22 first-pitch strikes
+    # mattered more than 2 jams escaped. The points do.
+    rows = card.credit_rows({"jam_escaped": 2, "putaway": 8},
+                            points={"jam_escaped": 12.4, "putaway": 3.1})
+    by_label = {r[0]: r for r in rows}
+    assert by_label["jams escaped"][2] == "+12.4"
+    assert by_label["put-away strikeouts"][2] == "+3.1"
+
+
+def test_a_debit_s_points_are_shown_as_the_negative_they_are():
+    rows = card.credit_rows({"walk_allowed": 3}, points={"walk_allowed": -6.2})
+    assert rows[0][2] == "-6.2"
+
+
+def test_a_credit_with_no_points_still_renders():
+    # An older board has counts and no credit_pts. The row must survive.
+    label, n, pts, debit = card.credit_rows({"putaway": 8})[0]
+    assert pts == "" and n == "8"
+
+
+def test_the_points_reach_the_markup():
+    row = dict(ROW, credit_pts={"jam_escaped": 12.4})
+    assert "+12.4" in card.card_html(row)
 
 
 def test_unknown_and_zero_credits_are_dropped():

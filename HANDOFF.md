@@ -561,6 +561,23 @@ Three things about this API bite, and all three have tests:
 - **Nothing is auto-linked.** `#MLB` with no facet is three inert
   characters.
 
+**"How he earned it" shows points as well as counts.** A count says a man
+threw 22 strikes with men on; it does not say whether that mattered more
+than escaping two jams. The points do. They are computed properly rather
+than multiplied out on the card: each credit's leverage-weighted count
+(`cw_` columns, kept out of `_process_points` for this) times its value in
+`AWARD_CREDITS`, times the opponent weight, times the season's process
+scale — the same chain the total goes through.
+
+They are **gross**, and deliberately do not sum to the process figure beside
+them. Every plate appearance is charged the credits an average player would
+have earned in the same spot, and the result is capped per appearance;
+neither of those subtractions belongs to any one credit. Making the rows
+reconcile would mean apportioning a cap across categories, which is
+arithmetic nobody could defend. What a reader wants here is the relative
+weight of a jam escape against a first-pitch strike, and that is exactly
+what these are.
+
 Also worth knowing: `aspectRatio` on an image embed is not decoration —
 without it the client guesses and crops a 4:5 card to a letterbox with the
 footer cut off. Alt text is generated from the row and describes the card
@@ -639,6 +656,32 @@ audio to make one from.
 A post carries images **or** a video, never both: `embed` is one field, and
 sending both would drop one depending on dict ordering. `post_record`
 raises rather than picking.
+
+## The nightly posts by itself
+
+`nightly.yml` builds, commits, deploys the site, then dispatches
+`publish.yml` for the day — and, **on Mondays only**, for the week.
+
+Weeks run Monday to Sunday, so a week is not complete until Sunday's games
+are in, and the first job that has them is Monday morning's nightly.
+Posting a week on Sunday would be publishing six days and calling it seven.
+`date -u +%u` is 1 on Monday; the job runs at 11:17 UTC, comfortably inside
+Monday everywhere that matters here.
+
+Both dispatches are gated on `steps.commit.outputs.pushed`, so a night where
+nothing changed posts nothing — which is what you want on an off-day, rather
+than a thread about yesterday's yesterday.
+
+**Nothing posts a window twice.** Before a live run, `publish` reads the
+account's own posts via `com.atproto.repo.listRecords` and refuses if a post
+already starts with this window's headline ("DAWG OF THE DAY — August 29,
+2026"). The timeline is the ledger: a state file would be one more thing to
+commit, to race with the nightly's own push, and to be wrong. This is the
+guard the account needed on the day it collected two threads for August 28
+from two manual runs. `--repost` overrides.
+
+Only the *root's* headline counts. A runner-up left behind by a failed root
+must not make the window look posted.
 
 ## Past seasons
 

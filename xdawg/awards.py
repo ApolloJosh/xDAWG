@@ -74,6 +74,12 @@ from .config import AWARD_CREDITS, AWARD_PROCESS_BALANCE, PILLAR_WEIGHTS
 # site so a reader can see WHY the process half scored what it did.
 CREDIT_NAMES = sorted({c for role in AWARD_CREDITS.values() for c in role})
 
+# Column prefixes: CW is a credit's leverage-weighted count, CP the points
+# that count is worth once the credit's value, the opponent weight and the
+# season's process scale are applied.
+CW = "cw_"
+CP = "cp_"
+
 # Trips needed to be eligible, for a COMPLETE window. Without a floor a
 # September call-up with one pinch-hit homer in his only trip wins DAWG of the
 # Day over a man who did it four times.
@@ -233,15 +239,19 @@ def _process_points(p: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame({c: d[c].to_numpy() for c in key})
     for name, f in flags.items():
         out[name] = f                            # raw counts, for display
-        out[f"_w_{name}"] = f * lev              # weighted, for scoring
+        out[f"{CW}{name}"] = f * lev             # weighted, for scoring
     out = out.groupby(key, as_index=False).sum()
 
     for role in ("hitter", "pitcher"):
         vals = AWARD_CREDITS[role]
         out[f"proc_{role}"] = sum(
-            out[f"_w_{c}"] * v for c, v in vals.items()
-            if f"_w_{c}" in out.columns)
-    return out.drop(columns=[c for c in out.columns if c.startswith("_w_")])
+            out[f"{CW}{c}"] * v for c, v in vals.items()
+            if f"{CW}{c}" in out.columns)
+    # The weighted sums are KEPT, not dropped. They are what lets the card
+    # say what each credit was worth in points rather than only how many
+    # times it fired -- "22 strikes with men on" is a count; "+8.8" is the
+    # thing the reader actually wants to weigh against the win probability.
+    return out
 
 
 def _jam_escapes(p: pd.DataFrame, d: pd.DataFrame, key: list) -> np.ndarray:
@@ -390,6 +400,15 @@ def _plate_appearances(p: pd.DataFrame, season: int) -> pd.DataFrame:
         ))
         for c in credit_cols:
             f[c] = pd.to_numeric(pa[c], errors="coerce").fillna(0.0).to_numpy()
+        # And what each of those credits was worth, in the same units the
+        # score is in. The opponent weight multiplies every credit exactly
+        # as it multiplies the total, so it belongs here rather than being
+        # applied to a sum later.
+        for c, v in AWARD_CREDITS[role].items():
+            col = f"{CW}{c}"
+            if col in pa.columns:
+                f[f"{CP}{c}"] = (pd.to_numeric(pa[col], errors="coerce")
+                                 .fillna(0.0).to_numpy() * v * w)
         return f
 
     hit = frame("hitter", pa["batter"], bat_team, fld_team, wpa_bat, rv,
@@ -610,6 +629,8 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
     d["_w"] = d["game_date"].map(lambda x: window_key(x, kind))
 
     agg_credits = {c: (c, "sum") for c in CREDIT_NAMES if c in d.columns}
+    agg_credits.update({f"{CP}{c}": (f"{CP}{c}", "sum") for c in CREDIT_NAMES
+                        if f"{CP}{c}" in d.columns})
     g = d.groupby(["_w", "player_id", "role"]).agg(
         score=("score", "sum"),
         wpa_pts=("wpa_pts", "sum"),
@@ -683,6 +704,15 @@ def _leaders(pa: pd.DataFrame, kind: str, names: dict, teams: dict,
                    if c in g.columns and abs(float(r[c])) >= 0.5}
             if got:
                 row["credits"] = got
+                # What each of those was worth. GROSS: the process total
+                # beside it is net of the average-day baseline every plate
+                # appearance is charged, and is capped per plate appearance
+                # besides, so these deliberately do not sum to it. Showing a
+                # reconciling figure would mean apportioning a cap across
+                # credits, which is arithmetic nobody could defend.
+                row["credit_pts"] = {
+                    c: round(float(r[f"{CP}{c}"]), 1) for c in got
+                    if f"{CP}{c}" in g.columns}
             # `best` is kept for the podium of EVERY window, not just the
             # featured one: the archive popup explains the moment for a week
             # three weeks back, and without this it would have nothing to
@@ -774,6 +804,10 @@ def build_awards(p: pd.DataFrame, season: int, names: dict,
     # rescaled to match its spread.
     proc_scale = calibrate_process(pa)
     pa["proc_pts"] = pa["proc"] * proc_scale
+    # The per-credit points ride the same scale, so a row on the card is in
+    # the same units as the total beside it.
+    for c in [c for c in pa.columns if c.startswith(CP)]:
+        pa[c] = pa[c] * proc_scale
 
     # No single plate appearance may earn more process than the biggest swing
     # win probability ever produces. Leverage and the FIGHT weight both

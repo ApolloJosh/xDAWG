@@ -119,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     pub.add_argument("--no-video", action="store_true",
                      help="cards only. Skips the clip chain entirely, so a "
                           "wording check costs no MLB traffic.")
+    pub.add_argument("--repost", action="store_true",
+                     help="post this window again even though a thread for "
+                          "it is already on the timeline.")
     pub.add_argument("--force-video", action="store_true",
                      help="attempt the video upload even when the account "
                           "reports it cannot. Each post still falls back to "
@@ -228,6 +231,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[xdawg] login failed: {e}")
             return 2
         print(f"[xdawg] posting as {session.handle} ({session.did})")
+
+        # Has this window already gone out? The timeline is the ledger --
+        # no state file to commit, race or be wrong about. This is the guard
+        # the account needed on the day it collected two threads for
+        # August 28 from two manual runs.
+        head = bluesky.headline_of(items[0].text)
+        try:
+            if bluesky.already_posted(session, head):
+                print(f"[xdawg] a thread for this window is already posted: "
+                      f"{head!r}")
+                if not a.repost:
+                    print("[xdawg] not posting it twice. --repost overrides.")
+                    return 0
+                print("[xdawg] --repost set; posting it again anyway.")
+        except bluesky.BlueskyError as e:
+            print(f"[xdawg] could not check for an existing thread: {e}")
         if any(i.video for i in items):
             # Both things that stop a video -- an unverified email and the
             # daily quota -- report here in a sentence, and otherwise

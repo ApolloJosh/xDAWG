@@ -145,3 +145,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run pages.yml --ref "${{ github.ref_name }}"
+
+      # And post it. This runs only when the build actually committed new
+      # data, so a night where nothing changed posts nothing -- which is the
+      # behaviour you want on an off-day rather than a thread about
+      # yesterday's yesterday.
+      #
+      # publish.yml refuses a window whose thread is already on the timeline,
+      # so a re-run of this job is safe: it dispatches, and the publish
+      # declines.
+      - name: Post the DAWG of the Day
+        if: ${{ steps.commit.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish.yml --ref "${{ github.ref_name }}" \
+            -f window=day -f top=5 -f live=true
+
+      # Weeks run Monday to Sunday, so the week is only complete once
+      # Sunday's games are in -- which is this job, on Monday morning. Posting
+      # it on Sunday would be publishing a six-day week and calling it seven.
+      #
+      # `date -u +%u` is 1 on Monday. The job runs at 11:17 UTC, comfortably
+      # inside Monday in every timezone that matters here.
+      - name: Post the DAWG of the Week, on Mondays
+        if: ${{ steps.commit.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(date -u +%u)" = "1" ]; then
+            echo "Monday: Sunday's games are in, so the week is complete."
+            gh workflow run publish.yml --ref "${{ github.ref_name }}" \
+              -f window=week -f top=5 -f live=true
+          else
+            echo "Not Monday ($(date -u +%A)); the week is still running."
+          fi
