@@ -451,3 +451,58 @@ def test_slugs_are_safe_to_use_as_filenames():
     assert posts.slug("01", "2026-08-28", "NYY", "CAM SCHLITTLER") == \
         "01-2026-08-28-nyy-cam-schlittler"
     assert "/" not in posts.slug("a/b", "c d")
+
+
+# --------------------------------------------------------------------------
+# alt text
+# --------------------------------------------------------------------------
+# This section exists because it did not. alt_text was the one consumer of
+# credit_rows with no test, so when that list grew a fourth field the unpack
+# here kept saying three and nobody found out until it raised on CI in the
+# middle of a live publish. Every branch of it is now walked.
+
+def test_alt_text_reads_the_card_top_to_bottom():
+    text = posts.alt_text(ROW, "day", "2026-08-29")
+    assert text.startswith("xDAWG card. DAWG OF THE DAY, August 29, 2026.")
+    assert "Cam Schlittler, NYY pitcher" in text
+    assert "+96.0 DAWG points (+74.8 win probability, +21.1 process)" in text
+
+
+def test_alt_text_carries_the_stat_line_and_the_credits():
+    # Both are on the card and in no other part of the post, so a reader
+    # using alt text gets them here or not at all.
+    text = posts.alt_text(ROW, "day", "2026-08-29")
+    assert "5.2 IP" in text and "8 K" in text
+    assert "How he earned it: " in text
+    assert "2 jams escaped" in text
+
+
+def test_alt_text_describes_the_best_moment_in_the_site_s_words():
+    assert card.why_line(ROW) in posts.alt_text(ROW, "day", "2026-08-29")
+
+
+def test_alt_text_works_for_a_hitter_too():
+    text = posts.alt_text(HITTER, "day", "2026-08-29")
+    assert "Freddie Freeman, LAD hitter" in text
+    assert "5 PA" in text
+
+
+def test_alt_text_survives_a_row_with_almost_nothing_in_it():
+    # No line, no credits, no best moment: three branches skipped at once.
+    text = posts.alt_text({"name": "X Y", "team": "NYY"}, "day", "2026-08-29")
+    assert text.startswith("xDAWG card.")
+    assert "How he earned it" not in text
+
+
+def test_alt_text_takes_the_payload_s_own_window_label():
+    aw = {"labels": {"week": {"2026-08-24": "August 24–30, 2026"}}}
+    assert "August 24–30, 2026" in posts.alt_text(ROW, "week", "2026-08-24", aw)
+
+
+def test_credit_rows_are_read_by_name_not_by_position():
+    # The durable half of the fix: the row is a NamedTuple, so a consumer
+    # that asks for .label keeps working when a field is added, and a stray
+    # `for a, b, c in` is a test failure here rather than a live one.
+    row = card.credit_rows({"jam_escaped": 2}, points={"jam_escaped": 7.5})[0]
+    assert (row.label, row.count, row.points, row.debit) == tuple(row)
+    assert row.label == "jams escaped"

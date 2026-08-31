@@ -96,8 +96,11 @@ def alt_text(row: dict, window: str, key: str,
     role = row.get("role", "hitter")
     stats = ", ".join(f"{v} {k}" for k, v in
                       card_mod.stat_cells(row.get("line"), role))
-    credits = "; ".join(f"{n} {lbl}" for lbl, n, _ in
-                        card_mod.credit_rows(row.get("credits"), 5))
+    # Attribute access, not an unpack: this list grew a `points` field once
+    # and the unpack here kept saying three, which is a ValueError on CI in
+    # the middle of a live publish rather than anything a reader would see.
+    credits = "; ".join(f"{c.count} {c.label}"
+                        for c in card_mod.credit_rows(row.get("credits"), 5))
     bits = [
         f"xDAWG card. {card_mod.WINDOW_LABEL.get(window, 'DAWG')}, "
         f"{card_mod.window_label(awards, window, key)}.",

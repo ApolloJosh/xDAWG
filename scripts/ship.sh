@@ -36,6 +36,19 @@ if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
   exit 1
 fi
 
+# Files git is tracking that .gitignore says to ignore. An ignore rule has
+# no effect on a file already in the index, so __pycache__ rode along in
+# every commit with a rule sitting right there claiming to exclude it, and
+# the only symptom was conflicts on files nobody wrote. Untracking is a
+# one-time correction; doing it here makes it automatic, so adding a rule
+# and shipping once is enough to be rid of the strays.
+strays="$(git ls-files -i -c --exclude-standard)"
+if [ -n "$strays" ]; then
+  echo "Untracking files .gitignore excludes:"
+  echo "$strays" | sed 's/^/  /'
+  printf '%s\n' "$strays" | tr '\n' '\0' | xargs -0 git rm -r --cached -q --
+fi
+
 git add -A
 if git diff --cached --quiet; then
   echo "Nothing to commit."

@@ -50,6 +50,7 @@ import base64
 import html
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 FONTS = ASSETS / "fonts"
@@ -253,9 +254,22 @@ def stat_cells(line: dict | None, role: str) -> list[tuple[str, str]]:
     return out
 
 
+class Credit(NamedTuple):
+    """One row of "How he earned it".
+
+    A NamedTuple rather than a plain tuple because this grew a field once
+    already and the unpack in posts.alt_text went on saying `for lbl, n, _
+    in` -- which is a ValueError at run time, on CI, in the middle of a
+    live publish. Attribute access does not care how many fields there are.
+    """
+    label: str
+    count: str
+    points: str
+    debit: bool
+
+
 def credit_rows(credits: dict | None, limit: int | None = None,
-                points: dict | None = None
-                ) -> list[tuple[str, str, str, bool]]:
+                points: dict | None = None) -> list[Credit]:
     """"How he earned it", in the site's order and the site's words.
 
     Each row is (label, count, points, is_debit). The points are GROSS --
@@ -276,8 +290,8 @@ def credit_rows(credits: dict | None, limit: int | None = None,
             continue
         debit = key in DEBITS
         p = pts.get(key)
-        rows.append((label, f"{'−' if debit else ''}{abs(int(n))}",
-                     "" if p is None else sgn(float(p), 1), debit))
+        rows.append(Credit(label, f"{'−' if debit else ''}{abs(int(n))}",
+                           "" if p is None else sgn(float(p), 1), debit))
         if limit and len(rows) >= limit:
             break
     return rows
@@ -377,7 +391,8 @@ def card_html(row: dict, *, window: str = "day", key: str = "",
                 f"<span class=\"n\">{e(n)}</span>"
                 f"<span class=\"p\">{e(pts)}</span></div>")
 
-    credits_html = "".join(_credit(*c) for c in credits)
+    credits_html = "".join(_credit(c.label, c.count, c.points, c.debit)
+                           for c in credits)
 
     return f"""<!doctype html><meta charset="utf-8"><style>
 {_font_faces()}
