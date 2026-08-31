@@ -346,6 +346,41 @@ def thread_items(awards_path: str | Path, *, window: str = "day",
     return items, key
 
 
+def board_gaps(rows: list[dict], generated: str = "") -> list[str]:
+    """Fields the cards want that this board does not carry.
+
+    A board is data at a vintage, and the code that reads it moves on. When
+    a field arrives after a payload was written, every card renders -- just
+    without it, in a column that is simply blank. That is the worst kind of
+    wrong: nothing fails, nothing is logged, and the only detector is
+    somebody looking at the finished graphic and remembering what should
+    have been there. Which is how the first per-credit-points thread went
+    out with an empty points column.
+
+    So the vintage is checked out loud, before anything is sent. Not fatal:
+    an archive board from three weeks back legitimately predates the field
+    and is still worth posting. Said plainly, though, with the payload's own
+    timestamp, because "refresh the board" is the entire fix.
+    """
+    gaps = []
+    scored = [r for r in rows if r.get("credits")]
+    if scored and not any(r.get("credit_pts") for r in scored):
+        gaps.append(
+            "no per-credit points on this board, so \"How he earned it\" "
+            "will show counts and a blank points column"
+            + (f" (payload generated {generated})" if generated else "")
+            + ". Run the nightly refresh to rebuild it.")
+    return gaps
+
+
+def board_notes(awards_path: str | Path, *, window: str = "day",
+                key: str | None = None, top: int = 5) -> list[str]:
+    """`board_gaps` for the board a publish run is about to use."""
+    awards = clips_mod.load_awards(awards_path)
+    return board_gaps(clips_mod.winners(awards, window, key, top),
+                      str(awards.get("generated", "")))
+
+
 def staleness(window: str, key: str, today=None) -> int:
     """How many days behind `today` this window's last day is.
 

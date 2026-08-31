@@ -209,3 +209,70 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     raise SystemExit(1 if failed else 0)
+
+
+# --------------------------------------------------------------------------
+# runs allowed
+# --------------------------------------------------------------------------
+# Statcast's post_ score columns are per PITCH, not per plate appearance.
+# The runs figure used to be read off the FIRST pitch of a PA, where
+# `post_bat_score` is `bat_score` again by definition -- so the difference
+# was always nothing and every pitcher on the site had a 0.00 RA9. A card
+# went out saying a man who gave up three had allowed none.
+
+def _pa_pitches(ab: int, bat: float, posts: list[float], outs: int = 0,
+                game_pk: int = 1, inning: int = 1) -> list[dict]:
+    """One plate appearance, pitch by pitch, with the score after each."""
+    return [{"game_pk": game_pk, "at_bat_number": ab, "pitch_number": n,
+             "pitcher": HORSE, "inning": inning, "inning_topbot": "Top",
+             "outs_when_up": outs, "on_1b": np.nan, "on_2b": np.nan,
+             "on_3b": np.nan, "delta_run_exp": 0.0, "li": 1.0,
+             "bat_score": bat, "post_bat_score": post}
+            for n, post in enumerate(posts, start=1)]
+
+
+def test_a_home_run_on_the_fourth_pitch_still_counts_its_runs():
+    # The exact shape of the bug: nothing scores on pitch one, so reading
+    # the score there says nobody scored at all.
+    p = pd.DataFrame(
+        _pa_pitches(1, 0, [0, 0, 0], outs=0)
+        + _pa_pitches(2, 0, [0, 0, 0, 0], outs=1)
+        + _pa_pitches(3, 0, [0, 0, 0, 3], outs=1)     # three-run homer
+        + _pa_pitches(4, 3, [3, 3], outs=1))
+    pa = half_inning_pas(p)
+    assert pa["runs"].sum() == 3.0
+    assert float(pa.loc[pa["at_bat_number"] == 3, "runs"].iloc[0]) == 3.0
+
+
+def test_runs_that_cross_mid_plate_appearance_are_counted_too():
+    # A wild pitch scores one, then the batter singles in another. Both
+    # belong to this plate appearance and neither is on its last pitch
+    # alone, so only the span from first to last gets both.
+    p = pd.DataFrame(_pa_pitches(1, 0, [0, 1, 1, 2]))
+    assert half_inning_pas(p)["runs"].sum() == 2.0
+
+
+def test_a_scoreless_inning_is_still_scoreless():
+    p = pd.DataFrame(_pa_pitches(1, 0, [0, 0, 0])
+                     + _pa_pitches(2, 0, [0, 0], outs=1))
+    assert half_inning_pas(p)["runs"].sum() == 0.0
+
+
+def test_runs_never_go_negative_when_the_other_side_scores():
+    # `bat_score` is the BATTING team's, so the pitcher's own club scoring
+    # cannot move it. A negative here would mean the wrong column was read.
+    p = pd.DataFrame(_pa_pitches(1, 4, [4, 4, 4]))
+    assert (half_inning_pas(p)["runs"] >= 0).all()
+
+
+def test_without_the_post_columns_it_falls_back_to_the_next_batter():
+    # An old cache has bat_score and no post_bat_score. Differencing across
+    # batters still finds the run, one plate appearance late or not at all
+    # on the final out -- degraded, which is the documented bargain, but
+    # not silently zero.
+    rows = []
+    for ab, (bat, outs) in enumerate([(0, 0), (0, 1), (2, 2)], start=1):
+        r = _pa_pitches(ab, bat, [bat], outs=outs)[0]
+        del r["post_bat_score"]
+        rows.append(r)
+    assert half_inning_pas(pd.DataFrame(rows))["runs"].sum() == 2.0

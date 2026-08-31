@@ -512,6 +512,11 @@ def _stat_lines(pa: pd.DataFrame, key_col: str) -> dict:
         bb=("_bb", "sum"), hbp=("_hbp", "sum"), sf=("_sf", "sum"),
         sh=("_sh", "sum"), ci=("_ci", "sum"), k=("_k", "sum"),
         outs=("outs_recorded", "sum"), runs=("runs", "sum"),
+        # How many plate appearances actually carried a runs figure. A sum
+        # over nothing but nulls is 0.0 in pandas, so without this a feed
+        # that shipped no scores at all is indistinguishable from a shutout
+        # -- and prints as one, in bold, on the card.
+        runs_seen=("runs", "count"),
     ).reset_index()
 
     ab = g["pa"] - g["bb"] - g["hbp"] - g["sf"] - g["sh"] - g["ci"]
@@ -519,7 +524,8 @@ def _stat_lines(pa: pd.DataFrame, key_col: str) -> dict:
     obp = ((g["h"] + g["bb"] + g["hbp"]) / on_base.where(on_base > 0))
     slg = (g["tb"] / ab.where(ab > 0))
     ip = g["outs"] / 3.0
-    ra9 = (g["runs"] * 9.0 / ip.where(ip > 0))
+    runs = g["runs"].where(g["runs_seen"] > 0)     # unknown, not zero
+    ra9 = (runs * 9.0 / ip.where(ip > 0))
 
     out = {}
     for i, r in g.iterrows():
@@ -541,7 +547,8 @@ def _stat_lines(pa: pd.DataFrame, key_col: str) -> dict:
                 "outs": int(r["outs"]) if pd.notna(r["outs"]) else 0,
                 "K": int(r["k"]), "BB": int(r["bb"]),
                 "RA9": (None if pd.isna(ra9[i]) else round(float(ra9[i]), 2)),
-                "BF": int(r["pa"]), "R": int(r["runs"]),
+                "BF": int(r["pa"]),
+                "R": (None if pd.isna(runs[i]) else int(runs[i])),
             }
         out[(r[key_col], int(r["player_id"]), r["role"])] = line
     return out

@@ -196,7 +196,14 @@ def main(argv: list[str] | None = None) -> int:
             print("[xdawg] nothing resolved to video. The reasons are above; "
                   "if they all say ffmpeg, the machine needs it installed.")
 
-        from .posts import staleness
+        from .posts import board_notes, staleness
+
+        # The board's age is one kind of stale; its vintage is another. A
+        # payload written before a field existed renders a card with a
+        # silently empty column, and nobody finds out until they look at it.
+        for gap in board_notes(a.awards, window=a.window, key=a.key,
+                               top=a.top):
+            print(f"[xdawg] {gap}")
 
         age = staleness(a.window, key)
         if age > a.max_age:

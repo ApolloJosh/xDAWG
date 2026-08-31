@@ -287,6 +287,22 @@ def half_inning_pas(p: pd.DataFrame) -> pd.DataFrame:
     )
     pa = first.merge(rv, on=["game_pk", "at_bat_number"], how="left")
 
+    # The batting team's score at the END of the plate appearance. This has
+    # to come off the LAST pitch, and `pa` is built from the first, which is
+    # the whole reason runs allowed read zero for everybody: Statcast's
+    # post_ columns are per PITCH, not per plate appearance, so on pitch one
+    # `post_bat_score` is simply `bat_score` again and the difference is
+    # always nothing. A three-run homer on the fourth pitch scored nought.
+    # Max rather than last because the score cannot go down inside a plate
+    # appearance, and max steps over a null where last would take it.
+    if "post_bat_score" in d.columns:
+        end = (
+            pd.to_numeric(d["post_bat_score"], errors="coerce")
+            .groupby([d["game_pk"], d["at_bat_number"]]).max()
+            .rename("_post_end").reset_index()
+        )
+        pa = pa.merge(end, on=["game_pk", "at_bat_number"], how="left")
+
     # Everything that gets compared or arithmetic'd is forced out of the
     # nullable extension dtypes first -- pd.NA in a comparison returns NA,
     # not False, and it poisons the whole chain three functions later.
@@ -306,8 +322,9 @@ def half_inning_pas(p: pd.DataFrame) -> pd.DataFrame:
     ).clip(lower=0)
 
     # Runs that crossed during this plate appearance, for the traditional
-    # stat lines on the awards page. `post_bat_score` is exact when the feed
-    # carries it; without it the score at the START of the next batter is the
+    # stat lines on the awards page: the score after the last pitch of it,
+    # less the score before the first. Exact when the feed carries the post_
+    # columns; without them the score at the START of the next batter is the
     # same number for every plate appearance except the last of a half
     # inning, where runs scoring on the final out are lost. Rare, and the
     # fallback only applies to a cache written before the column was added.
@@ -315,9 +332,8 @@ def half_inning_pas(p: pd.DataFrame) -> pd.DataFrame:
         dtype="float64", na_value=np.nan) if "bat_score" in pa.columns else None
     if bat is None:
         pa["runs"] = np.nan
-    elif "post_bat_score" in pa.columns:
-        post = pd.to_numeric(pa["post_bat_score"], errors="coerce").to_numpy(
-            dtype="float64", na_value=np.nan)
+    elif "_post_end" in pa.columns:
+        post = pa["_post_end"].to_numpy(dtype="float64", na_value=np.nan)
         pa["runs"] = np.clip(post - bat, 0, None)
     else:
         pa["_bat"] = bat

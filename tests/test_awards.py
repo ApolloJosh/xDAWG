@@ -428,3 +428,43 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{len(fns) - failed}/{len(fns)} passed")
     raise SystemExit(1 if failed else 0)
+
+
+# --------------------------------------------------------------------------
+# a missing number is not a zero
+# --------------------------------------------------------------------------
+
+def _pitcher_pa(runs, outs=(3.0, 0.0)):
+    return pd.DataFrame([
+        {"key": "2026-08-29", "player_id": 1, "role": "pitcher",
+         "events": ev, "outs_recorded": o, "runs": r}
+        for ev, o, r in zip(("strikeout", "single"), outs, runs)
+    ])
+
+
+def test_a_feed_with_no_scores_leaves_runs_unknown_rather_than_zero():
+    """A sum over nothing but nulls is 0.0, and 0.00 RA9 is a shutout.
+
+    That is how every pitcher on the site came to look unhittable: the runs
+    column was empty, pandas summed it to nought, and the card printed the
+    nought in bold. Unknown has to look unknown.
+    """
+    line = awards._stat_lines(_pitcher_pa([np.nan, np.nan]), "key")[
+        ("2026-08-29", 1, "pitcher")]
+    assert line["R"] is None
+    assert line["RA9"] is None
+
+
+def test_a_genuine_shutout_still_reads_as_a_shutout():
+    line = awards._stat_lines(_pitcher_pa([0.0, 0.0]), "key")[
+        ("2026-08-29", 1, "pitcher")]
+    assert line["R"] == 0
+    assert line["RA9"] == 0.0
+
+
+def test_runs_allowed_reach_ra9_through_true_innings():
+    # Two runs in one inning is an 18.00 RA9, not 2.00 and not 6.00.
+    line = awards._stat_lines(_pitcher_pa([0.0, 2.0]), "key")[
+        ("2026-08-29", 1, "pitcher")]
+    assert line["R"] == 2
+    assert line["RA9"] == 18.0

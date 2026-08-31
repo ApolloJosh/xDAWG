@@ -506,3 +506,31 @@ def test_credit_rows_are_read_by_name_not_by_position():
     row = card.credit_rows({"jam_escaped": 2}, points={"jam_escaped": 7.5})[0]
     assert (row.label, row.count, row.points, row.debit) == tuple(row)
     assert row.label == "jams escaped"
+
+
+# --------------------------------------------------------------------------
+# the board's vintage
+# --------------------------------------------------------------------------
+# A payload written before a field existed renders every card fine, just
+# with that column blank. Nothing raises, nothing logs, and the detector is
+# a human squinting at a finished graphic. So it is checked out loud.
+
+def test_a_board_without_per_credit_points_says_so():
+    rows = [dict(ROW), dict(HITTER)]          # counts, no credit_pts
+    gaps = posts.board_gaps(rows, "2026-08-30 12:47 UTC")
+    assert len(gaps) == 1
+    assert "blank points column" in gaps[0]
+    assert "2026-08-30 12:47 UTC" in gaps[0]
+    assert "nightly refresh" in gaps[0]
+
+
+def test_a_current_board_is_quiet():
+    rows = [dict(ROW, credit_pts={"jam_escaped": 12.4}), dict(HITTER)]
+    assert posts.board_gaps(rows) == []
+
+
+def test_a_board_with_no_credits_at_all_is_not_a_gap():
+    # Nothing to be missing. A complaint here would be noise on every
+    # window that happens to have thin rows.
+    assert posts.board_gaps([{"name": "X Y"}]) == []
+    assert posts.board_gaps([]) == []
